@@ -110,6 +110,9 @@ def main():
     ap.add_argument("--subset-name", default="专题")
     ap.add_argument("--videos-dir", default="videos", help="folder to detect local downloads")
     ap.add_argument("--notes", default=None, help="path to a text file with provenance notes")
+    ap.add_argument("--report", default=None,
+                    help="verification report written by download_webinar.py --report. "
+                         "Files marked failed there are NOT counted as downloaded.")
     args = ap.parse_args()
 
     data = json.load(open(args.manifest, encoding="utf-8"))
@@ -122,9 +125,24 @@ def main():
     # Walk RECURSIVELY: download_webinar.py --manifest writes each video into
     # videos/<slug>/, so a flat listdir() would miss every batch download and
     # silently report "not downloaded".
+    #
+    # A verification report (download_webinar.py --report) overrides raw file
+    # presence: files listed as failed are quarantined by the downloader and
+    # must NOT be counted as downloaded.
+    verified = {}
+    if args.report and os.path.exists(args.report):
+        with open(args.report, encoding="utf-8") as f:
+            rep = json.load(f)
+        for slug, info in (rep.get("videos") or {}).items():
+            verified[slug] = bool(info.get("ok"))
+        print("read verification report: %d entries (%d failed)"
+              % (len(verified), sum(1 for v in verified.values() if not v)))
+
     local = {}
     if os.path.isdir(args.videos_dir):
         for root, _dirs, files in os.walk(args.videos_dir):
+            if os.path.basename(root) == "_failed":
+                continue  # quarantined files never count as downloaded
             for fn in files:
                 if not fn.lower().endswith((".mp4", ".mkv", ".webm", ".m4v")):
                     continue
@@ -133,6 +151,10 @@ def main():
                 for v in events:
                     for vv in (v.get("videos") or []):
                         if vv.get("id") and str(vv["id"]) in fn:
+                            slug = v.get("slug") or ""
+                            # if a report exists, trust it over mere file presence
+                            if slug in verified and not verified[slug]:
+                                continue
                             rel = os.path.relpath(os.path.join(root, fn), args.videos_dir)
                             local[fn] = (v, rel)
 

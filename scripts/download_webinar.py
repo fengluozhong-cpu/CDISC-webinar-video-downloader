@@ -301,6 +301,36 @@ def verify(path):
     return info["ok"], info
 
 
+def _find_existing(subdir, out_dir, video_id):
+    """Locate an already-downloaded file for this video id, if any."""
+    for d in (subdir, out_dir):
+        if not os.path.isdir(d):
+            continue
+        for f in os.listdir(d):
+            if str(video_id) in f and f.lower().endswith((".mp4", ".mkv", ".webm", ".m4v", ".mov")) \
+                    and ".part" not in f:
+                return os.path.join(d, f)
+    return None
+
+
+def _quarantine(path, out_dir):
+    """Move a file that failed verification out of the way (not deleted).
+
+    Keeping it (instead of rm) preserves evidence and lets the user inspect it,
+    while making sure it is NOT counted as a successful download.
+    """
+    qdir = os.path.join(out_dir, "_failed")
+    try:
+        os.makedirs(qdir, exist_ok=True)
+        dest = os.path.join(qdir, os.path.basename(path))
+        if os.path.exists(dest):
+            os.remove(dest)
+        shutil.move(path, dest)
+        return dest
+    except OSError:
+        return path
+
+
 def batch_download(args):
     """Download every video entry in a manifest, one page URL at a time.
 
@@ -328,25 +358,25 @@ def batch_download(args):
         return 0
 
     ok, failed, skipped = 0, [], 0
+    report = {}
     for i, (ev, url) in enumerate(targets, 1):
         slug = ev.get("slug") or ("entry-%d" % i)
         subdir = os.path.join(args.out, slug)
         vid = (ev.get("videos") or [{}])[0].get("id")
         if args.skip_existing and vid:
-            # look in the per-slug subdir (where this run writes) AND the flat
-            # --out dir (where a previous single-URL run may have put it)
-            found = []
-            for d in (subdir, args.out):
-                if not os.path.isdir(d):
+            # Re-verify before skipping: a file that failed verification in an
+            # earlier run must NOT be silently counted as downloaded.
+            existing = _find_existing(subdir, args.out, vid)
+            if existing:
+                good, rep = verify(existing) if not args.no_verify else (True, {})
+                if good:
+                    print("[%d/%d] SKIP %s (already downloaded)" % (i, len(targets), slug))
+                    skipped += 1
                     continue
-                for f in os.listdir(d):
-                    if str(vid) in f and f.lower().endswith((".mp4", ".mkv", ".webm", ".m4v")) \
-                            and ".part" not in f:
-                        found.append(os.path.join(d, f))
-            if found:
-                print("[%d/%d] SKIP %s (already downloaded: %s)"
-                      % (i, len(targets), slug, os.path.basename(found[0])))
-                skipped += 1
+                # failed verification -> quarantine it and re-download
+                q = _quarantine(existing, args.out)
+                print("[%d/%d] %s exists but FAILED verification -> quarantined to %s, re-downloading"
+                      % (i, len(targets), slug, q))
                 continue
         print("[%d/%d] %s" % (i, len(targets), slug))
         referer = args.referer
@@ -373,20 +403,32 @@ def batch_download(args):
             if not args.no_verify:
                 good, rep = verify(out)
                 print("   -> %s %s" % (out, json.dumps(rep, ensure_ascii=False)))
+                report[slug] = {"ok": good, "file": out, "report": rep}
                 if not good:
-                    failed.append({"slug": slug, "error": "verify failed", "report": rep})
+                    q = _quarantine(out, args.out) if out else None
+                    failed.append({"slug": slug, "error": "verify failed",
+                                   "quarantined": q, "report": rep})
                     continue
+            else:
+                report[slug] = {"ok": True, "file": out, "report": {}}
             ok += 1
         except BaseException as e:  # noqa: BLE001
             # BaseException, not Exception: download() raises SystemExit on
             # yt-dlp failure, and SystemExit is NOT a subclass of Exception.
             # Catching only Exception would let one bad video abort the whole batch.
             failed.append({"slug": slug, "error": str(e)[:300] or repr(e)[:300]})
+            report.setdefault(slug, {"ok": False, "file": None, "report": {"error": str(e)[:200]}})
             print("   -> FAILED: %s" % str(e)[:200])
     print("\nbatch done: ok=%d skipped=%d failed=%d" % (ok, skipped, len(failed)))
     if failed:
         for f in failed:
             print("  FAILED %s: %s" % (f["slug"], f["error"]))
+    if args.report:
+        with open(args.report, "w", encoding="utf-8") as f:
+            json.dump({"ok": ok, "skipped": skipped, "failed": len(failed),
+                       "failures": failed, "videos": report}, f,
+                      ensure_ascii=False, indent=1)
+        print("verification report written to %s" % args.report)
     return 0 if not failed else 1
 
 
@@ -409,6 +451,9 @@ def main():
     ap.add_argument("--skip-existing", action="store_true",
                     help="batch mode: skip videos already present in --out")
     ap.add_argument("--limit", type=int, default=0, help="batch mode: max videos to fetch")
+    ap.add_argument("--report", default=None,
+                    help="batch mode: write a JSON verification report here "
+                         "(build_index_xlsx.py --report reads it to mark verified files)")
     args = ap.parse_args()
 
     if not ytdlp():
