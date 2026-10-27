@@ -22,7 +22,8 @@ import subprocess
 import sys
 import tempfile
 
-SKILL = os.path.dirname(os.path.abspath(__file__))
+SKILL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS = os.path.join(SKILL, "scripts")
 FAILED = []
 PY = sys.executable
 FF = shutil.which("ffmpeg")
@@ -56,7 +57,7 @@ def write_manifest(path, entries):
 
 
 def build_flags(manifest, report, videos_dir, out_xlsx):
-    r = subprocess.run([PY, os.path.join(SKILL, "build_index_xlsx.py"),
+    r = subprocess.run([PY, os.path.join(SCRIPTS, "build_index_xlsx.py"),
                         "--manifest", manifest, "--out", out_xlsx,
                         "--report", report, "--videos-dir", videos_dir],
                        capture_output=True, text=True)
@@ -75,7 +76,7 @@ def build_flags(manifest, report, videos_dir, out_xlsx):
 
 # ---------------------------------------------------------------- H1
 print("=== H1: --slug 参数存在，单视频模式不崩 ===")
-r = subprocess.run([PY, os.path.join(SKILL, "download_webinar.py"), "--help"],
+r = subprocess.run([PY, os.path.join(SCRIPTS, "download_webinar.py"), "--help"],
                    capture_output=True, text=True)
 if "--slug" not in r.stdout:
     FAILED.append("H1: argparse 没有 --slug（单视频模式会 AttributeError）")
@@ -84,7 +85,7 @@ else:
     print("   PASS: --slug 已定义")
 # also assert the attribute is reachable even when not passed
 import importlib.util
-spec = importlib.util.spec_from_file_location("dl", os.path.join(SKILL, "download_webinar.py"))
+spec = importlib.util.spec_from_file_location("dl", os.path.join(SCRIPTS, "download_webinar.py"))
 dl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dl)
 

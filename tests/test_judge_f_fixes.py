@@ -18,12 +18,13 @@ import subprocess
 import sys
 import tempfile
 
-SKILL = os.path.dirname(os.path.abspath(__file__))
+SKILL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS = os.path.join(SKILL, "scripts")
 FAILED = []
 
 
 def load(name):
-    spec = importlib.util.spec_from_file_location(name, os.path.join(SKILL, name + ".py"))
+    spec = importlib.util.spec_from_file_location(name, os.path.join(SCRIPTS, name + ".py"))
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m
@@ -86,7 +87,7 @@ root2 = tempfile.mkdtemp(prefix="d2_")
 mp = os.path.join(root2, "m.json")
 with open(mp, "w", encoding="utf-8") as f:
     json.dump(manifest_for("s", "111", "T"), f)
-r = subprocess.run([sys.executable, os.path.join(SKILL, "build_index_xlsx.py"),
+r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_index_xlsx.py"),
                     "--manifest", mp, "--out", os.path.join(root2, "i.xlsx"),
                     "--report", os.path.join(root2, "nope.json"),
                     "--videos-dir", os.path.join(root2, "videos")],
@@ -111,7 +112,7 @@ with open(rp3, "w", encoding="utf-8") as f:
                "videos": {"other-slug": {"ok": True, "file": "z", "report": {}}}},
               f, ensure_ascii=False)
 out3 = os.path.join(root3, "i.xlsx")
-r3 = subprocess.run([sys.executable, os.path.join(SKILL, "build_index_xlsx.py"),
+r3 = subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_index_xlsx.py"),
                      "--manifest", mp3, "--out", out3, "--report", rp3,
                      "--videos-dir", os.path.join(root3, "videos")],
                     capture_output=True, text=True)

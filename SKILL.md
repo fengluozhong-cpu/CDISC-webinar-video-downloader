@@ -14,7 +14,7 @@ agent_created: true
 「批量下载某站点会议录像」——以及视频站被代理挡住（403 / 连不上）时。
 
 命令块首行的 `cd` 已指向本 skill 目录，后面用相对路径调用。
-`recalc.py` / `aigc_label.py` 在带版本号的插件缓存目录，**不要硬编码**，
+`recalc.py` / `aigc_label.py` 在带版本号的插件缓存目录，**不要硬编码** ——
 用 `python "scripts/resolve_sheet_scripts.py" --shell` 取实际路径。
 
 ## 执行流程
@@ -153,7 +153,7 @@ python "scripts/resolve_sheet_scripts.py" --shell
 |---|---|---|---|
 | 1 | 改全局 `HTTP_PROXY` | 白名单代理按域名放行，改全局会搞坏别的任务 | 命令级 `--proxy` |
 | 2 | 直传 `player.vimeo.com/video/<id>` | `Cannot download embed-only video` | 承载 iframe 的**页面 URL** |
-| 3 | 让 ffmpeg 直连 SOCKS5 | ffmpeg 静默忽略 socks5 → 直连 → 403 | 起 `socks_bridge.py` 用 `--proxy http://127.0.0.1:39411`；curl 用 `--socks5` |
+| 3 | 让 ffmpeg 直连 SOCKS5 | ffmpeg 静默忽略 socks5 → 直连 → 403 | 起 `socks_bridge.py`；curl 用 `--socks5` |
 | 4 | 用 yt-dlp 默认 native HLS 下载器 | 数百 `.part-FragN` 触发安全钩子拦截 | `--downloader ffmpeg` |
 | 5 | 用 `COUNTIF(range,"*关键词*")` 通配符 | 跨引擎不一致，与专题 sheet 口径不符 | 明细加**显式枚举列**做精确 `COUNTIF` |
 | 6 | 用前缀匹配做 slug 黑名单 | 误伤 `2025-ai-innovation-challenge` | 精确匹配**完整 slug** |
@@ -161,7 +161,7 @@ python "scripts/resolve_sheet_scripts.py" --shell
 | 8 | shell 调 `reg.exe` 读注册表 | 本机安全策略拦截 `reg.exe` | Python `winreg`（脚本已内置） |
 | 9 | 只看退出码判断重算 | `errors_found` 退出码也是 0，会误判通过 | 只看 JSON `status` + `total_errors` |
 | 10 | 改 `extract_links()` 不做双向差集 | 静默漏抓或误抓 | 人工基线差集验收，两边都应为 0 |
-| 11 | 批量下载不降档 | 70 场 1080p ≈ 35GB + 逐个解码极慢 | `--height 720` + 先 `--limit 2` 试跑 |
+| 11 | 批量下载不降档 | 70 场 1080p ≈ 35GB + 逐个解码极慢 | `--height 720` + `--limit 2` 试跑 |
 | 12 | 只按「文件存在」判断已下载 | 坏文件会被算成已下载并交付 | 必须用 `--report` 贯通校验结论 |
 
 ## 🩺 失败模式：症状 → 一线修复 → 兜底
@@ -171,18 +171,20 @@ python "scripts/resolve_sheet_scripts.py" --shell
 | 症状 | 一线修复 | 仍失败时 |
 |---|---|---|
 | `found 0 detail links` | 看真实 `<a href>` 形态改 `extract_links()` | SPA/JSON 接口站 → 改用 API |
-| 场次比基线少 | 查漏抓四因：a href 正则贪婪 / 日期层级 / slug 过宽 / 黑名单前缀误伤 | 加分页或改 API |
-| yt-dlp 报 403 | 起桥接（第 2 步）+ `--proxy http://127.0.0.1:39411` | 查 `probe_network.py` 的 ACTION 行 |
+| 场次比基线少 | 查漏抓四因：a href 正则贪婪 / 日期层级 / slug 过宽 / 黑名单前缀误伤 | 加分页 |
+| yt-dlp 报 403 | 起桥接 + `--proxy http://127.0.0.1:39411` | 查 `probe_network.py` 的 ACTION 行 |
 | yt-dlp 报 embed-only | 换成承载 iframe 的页面 URL | 无公开页 → 记为「无公开录像」 |
 | 0 字节但退出码 0 | **查文件大小**，不只看 returncode | 降档重试 |
-| recalc 返回 `error` 键 | 装 `formulas` 引擎；或去掉外部引用 | 提示用户装 LibreOffice |
+| recalc 返回 `error` 键 | 装 `formulas` 引擎 | 提示用户装 LibreOffice |
 
 ## 脚本清单
 
 `probe_network.py`（探测出口）· `harvest_events.py`（抓列表→manifest）·
 `socks_bridge.py`（SOCKS5 桥）· `download_webinar.py`（下载/批量）·
-`build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）
+`build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）·
+`report_store.py`（report 合并的唯一实现）
 
-回归测试（改脚本后必跑）：`test_date_parse.py` · `test_verify_report.py` ·
-`test_judge_f/g/h_fixes.py`。排障见 `references/troubleshooting.md`；
-换站适配见 `references/site-profiles.md`。
+回归测试在 `tests/`（改脚本后必跑）：`test_date_parse.py` · `test_verify_report.py` ·
+`test_batch_isolation.py` · `test_report_store.py` · `test_judge_f/g/h_fixes.py`。
+
+排障见 `references/troubleshooting.md`；换站见 `references/site-profiles.md`。

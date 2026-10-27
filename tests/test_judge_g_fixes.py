@@ -17,7 +17,8 @@ import subprocess
 import sys
 import tempfile
 
-SKILL = os.path.dirname(os.path.abspath(__file__))
+SKILL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS = os.path.join(SKILL, "scripts")
 FAILED = []
 PY = sys.executable
 FF = shutil.which("ffmpeg")
@@ -46,7 +47,7 @@ def manifest_of(entries):
 
 
 def build_and_count(manifest, report, videos_dir, out_xlsx):
-    r = subprocess.run([PY, os.path.join(SKILL, "build_index_xlsx.py"),
+    r = subprocess.run([PY, os.path.join(SCRIPTS, "build_index_xlsx.py"),
                         "--manifest", manifest, "--out", out_xlsx,
                         "--report", report, "--videos-dir", videos_dir],
                        capture_output=True, text=True)
@@ -128,7 +129,7 @@ with open(rep3, "w", encoding="utf-8") as f:
                           "batch-b": {"ok": True, "file": "b", "report": {}}}}, f)
 # 调用单视频模式的 report 写入逻辑（通过 import 复用）
 import importlib.util
-spec = importlib.util.spec_from_file_location("dl", os.path.join(SKILL, "download_webinar.py"))
+spec = importlib.util.spec_from_file_location("dl", os.path.join(SCRIPTS, "download_webinar.py"))
 dl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dl)
 

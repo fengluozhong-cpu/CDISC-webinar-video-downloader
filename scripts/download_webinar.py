@@ -35,6 +35,9 @@ import subprocess
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import report_store
+
 VIMEO_RE = re.compile(r"player\.vimeo\.com/video/(\d+)")
 YOUTUBE_RE = re.compile(r"(?:youtube\.com/(?:embed|watch\?v=)|youtu\.be/)([A-Za-z0-9_-]{6,})")
 
@@ -247,6 +250,8 @@ def download(page_url, out_dir, proxy=None, referer=None, fmt=None,
 def find_output(out_dir, video_id=None):
     """Locate the produced media file in out_dir."""
     files = []
+    if not out_dir or not os.path.isdir(out_dir):
+        return None
     for f in os.listdir(out_dir):
         if not f.lower().endswith((".mp4", ".mkv", ".webm", ".m4v", ".mov")):
             continue
@@ -447,32 +452,10 @@ def batch_download(args):
         for f in failed:
             print("  FAILED %s: %s" % (f["slug"], f["error"]))
     if args.report:
-        # MERGE with any existing report (a previous --limit run, or single-video
-        # runs) -- overwriting would silently drop entries the Excel step needs.
-        payload = {"ok": ok, "skipped": skipped, "failed": len(failed),
-                   "failures": list(failed), "videos": dict(report)}
-        if os.path.exists(args.report):
-            try:
-                with open(args.report, encoding="utf-8") as f:
-                    prev = json.load(f)
-                merged = dict(prev.get("videos") or {})
-                merged.update(payload["videos"])   # this run wins for its slugs
-                payload["videos"] = merged
-                pf = list(prev.get("failures") or [])
-                # drop stale failure entries for slugs this run fixed
-                cur = {f_.get("slug") for f_ in failed}
-                pf = [f_ for f_ in pf if f_.get("slug") not in cur or
-                      any(f_.get("slug") == s and f_ not in failed for s in cur)]
-                payload["failures"] = pf + [f_ for f_ in failed if f_ not in pf]
-                payload["ok"] = int(prev.get("ok") or 0) + ok
-                payload["skipped"] = int(prev.get("skipped") or 0) + skipped
-                payload["failed"] = len(payload["failures"])
-            except (OSError, ValueError):
-                pass
-        with open(args.report, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=1)
-        print("verification report written to %s (%d entries)"
-              % (args.report, len(payload["videos"])))
+        # merge via the single shared implementation (never overwrite)
+        rs = report_store.update(args.report, videos=report, failures=failed)
+        print("verification report written to %s (%d entries, %d failed)"
+              % (args.report, len(rs["videos"]), rs["failed"]))
     return 0 if not failed else 1
 
 
@@ -569,31 +552,12 @@ def main():
         vkey = info.get("vimeo_id") or info.get("youtube_id") or os.path.basename(args.out)
         skey = getattr(args, "slug", None) or vkey
         entry = {"ok": ok, "file": out, "report": rep}
-        # MERGE into an existing report -- never clobber a batch run's results
-        payload = {"ok": 1 if ok else 0, "skipped": 0, "failed": 0 if ok else 1,
-                   "failures": [] if ok else [{"slug": skey, "error": "verify failed"}],
-                   "videos": {}}
-        if os.path.exists(args.report):
-            try:
-                with open(args.report, encoding="utf-8") as f:
-                    prev = json.load(f)
-                payload["videos"].update(prev.get("videos") or {})
-                pf = list(prev.get("failures") or [])
-                # this run supersedes the previous outcome for these keys
-                for k in {skey, vkey}:
-                    pf = [x for x in pf if x.get("slug") != k]
-                payload["failures"] = pf + payload["failures"]
-                payload["ok"] = int(prev.get("ok") or 0) + payload["ok"]
-                payload["skipped"] = int(prev.get("skipped") or 0)
-                payload["failed"] = len(payload["failures"])
-            except (OSError, ValueError):
-                pass
-        # write under BOTH keys so a lookup by slug OR by video id finds it;
-        # a stale entry for either key is replaced (not allowed to shadow it)
-        for k in {skey, vkey}:
-            payload["videos"][k] = entry
-        with open(args.report, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=1)
+        # write under BOTH keys so a lookup by slug OR by video id finds it
+        entries = {skey: entry}
+        if vkey and vkey != skey:
+            entries[vkey] = entry
+        fails = [] if ok else [{"slug": skey, "error": "verify failed"}]
+        report_store.update(args.report, videos=entries, failures=fails)
         print("verification report written to %s" % args.report)
     if not ok:
         raise SystemExit("verification FAILED")

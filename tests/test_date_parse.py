@@ -12,7 +12,7 @@ import os
 import re
 import sys
 
-spec = importlib.util.spec_from_file_location("h", os.path.join(os.path.dirname(__file__), "harvest_events.py"))
+spec = importlib.util.spec_from_file_location("h", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "harvest_events.py"))
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
 

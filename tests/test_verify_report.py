@@ -17,7 +17,8 @@ import subprocess
 import sys
 import tempfile
 
-SKILL = os.path.dirname(os.path.abspath(__file__))
+SKILL = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCRIPTS = os.path.join(SKILL, "scripts")
 ROOT = tempfile.mkdtemp(prefix="e2e_")
 VIDEOS = os.path.join(ROOT, "videos")
 os.makedirs(os.path.join(VIDEOS, "good-slug"))
@@ -66,7 +67,7 @@ with open(rpath, "w", encoding="utf-8") as f:
               f, ensure_ascii=False, indent=1)
 
 xlsx = os.path.join(ROOT, "index.xlsx")
-r = subprocess.run([sys.executable, os.path.join(SKILL, "build_index_xlsx.py"),
+r = subprocess.run([sys.executable, os.path.join(SCRIPTS, "build_index_xlsx.py"),
                     "--manifest", mpath, "--out", xlsx, "--title", "E2E",
                     "--report", rpath, "--videos-dir", VIDEOS],
                    capture_output=True, text=True)
