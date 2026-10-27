@@ -207,11 +207,13 @@ with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
 **原因**：openpyxl 只写公式字符串，**不写缓存值**。Excel 之外的预览器（微信、邮件附件、
 大多数网页预览）读不到值就显示空白。
 
-**解法**：跑重算脚本：
+**解法**：跑重算脚本（路径随版本变，用解析脚本取，别硬编码）：
 ```bash
-python "<sheetagent>/skills/workbuddy-sheet-generation/scripts/recalc.py" index.xlsx 60
+python "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader/scripts/resolve_sheet_scripts.py" --shell
+# 输出可直接执行的两条命令（recalc + aigc_label，自动选最新版本）
 ```
 判定只看 JSON 的 `status` 与 `total_errors`，**不要看退出码**。
+失败时 JSON 返回的是 `error` 键（**没有** `status` 字段）。
 
 ### 症状：重算返回 `error` 字段
 
@@ -236,3 +238,36 @@ python "<sheetagent>/skills/workbuddy-sheet-generation/scripts/recalc.py" index.
 **原因**：重算会把整个 xlsx 包重新序列化，先打的标会被覆盖。
 
 **解法**：**顺序固定**——先 `recalc.py`，再 `aigc_label.py`。
+
+### 症状：批量跑到某条整批停住（无 ok=N 汇总行）
+
+**原因**：单场失败时 download() 抛 SystemExit，而 SystemExit **不是** Exception 的子类，
+只 catch Exception 会让整批中断。
+
+**现状**：脚本已改 catch BaseException，单场失败不再中断整批，末尾照常打印
+`ok=N skipped=N failed=N`，失败场次列在 FAILED 清单里。
+
+### 症状：视频没声音
+
+**原因**：HLS 把音频放在独立 rendition，选到的格式是 video-only。
+
+**解法**：脚本会自动挑 audio-only 并用 `video+audio` 组合格式；
+也可显式 `--audio-fmt <id>` 指定，或 `--fmt "<video-id>+<audio-id>"`。
+
+### 症状：`Requested format is not available`
+
+**解法**：`--list-formats` 看实际可用档；指定 `--fmt`。
+
+### 症状：`Error during demuxing: I/O error`
+
+**解法**：以**全片解码**为准（`ffmpeg -v error -i out.mp4 -f null -`），不看文件大小；有问题就重下该场。
+
+### 症状：抓到的场次比基线多（多出 hub 页）
+
+**解法**：多为分类页/活动族页混入。补进 harvest_events.py 的 `SKIP_SLUGS`（必须精确匹配完整 slug）；
+若是同站其他事件族（如 /events/interchange/），检查路径规则是否放得太宽。
+
+### 症状：演讲人 / 日期为空
+
+**解法**：该站 DOM 不同 → 按 references/site-profiles.md 改提取逻辑。
+日期提取改动后必跑 `scripts/test_date_parse.py` 回归。

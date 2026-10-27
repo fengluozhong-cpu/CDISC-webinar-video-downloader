@@ -118,15 +118,23 @@ def main():
         raise SystemExit("manifest contains no events")
     kw = args.keyword or ""
 
-    # match local downloads by id so the "downloaded" column stays truthful
+    # Match local downloads by video id so the "downloaded" column stays truthful.
+    # Walk RECURSIVELY: download_webinar.py --manifest writes each video into
+    # videos/<slug>/, so a flat listdir() would miss every batch download and
+    # silently report "not downloaded".
     local = {}
     if os.path.isdir(args.videos_dir):
-        for fn in os.listdir(args.videos_dir):
-            if fn.lower().endswith((".mp4", ".mkv", ".webm", ".m4v")) and ".part" not in fn:
+        for root, _dirs, files in os.walk(args.videos_dir):
+            for fn in files:
+                if not fn.lower().endswith((".mp4", ".mkv", ".webm", ".m4v")):
+                    continue
+                if ".part" in fn:
+                    continue
                 for v in events:
                     for vv in (v.get("videos") or []):
                         if vv.get("id") and str(vv["id"]) in fn:
-                            local[fn] = (v, fn)
+                            rel = os.path.relpath(os.path.join(root, fn), args.videos_dir)
+                            local[fn] = (v, rel)
 
     wb = openpyxl.Workbook()
     wb.properties.title = args.title
@@ -153,7 +161,7 @@ def main():
         row = FIRST + idx
         vlink, vid = video_cell(r)
         plat = (r.get("videos") or [{}])[0].get("platform", "")
-        lf = next((fn for fn, (v, _) in local.items() if v is r), "")
+        lf = next((rel for fn, (v, rel) in local.items() if v is r), "")
         ws.cell(row=row, column=1, value=idx + 1).alignment = Alignment(horizontal="center")
         dt = parse_dt(r.get("date"), r.get("time"))
         dc = ws.cell(row=row, column=2, value=dt)
@@ -328,7 +336,7 @@ def main():
         for idx, r in enumerate(sub):
             row = 3 + idx
             vlink, vid = video_cell(r)
-            lf = next((fn for fn, (v, _) in local.items() if v is r), "")
+            lf = next((rel for fn, (v, rel) in local.items() if v is r), "")
             ss.cell(row=row, column=1, value=idx + 1).alignment = Alignment(horizontal="center")
             dt = parse_dt(r.get("date"), r.get("time"))
             dc = ss.cell(row=row, column=2, value=dt)

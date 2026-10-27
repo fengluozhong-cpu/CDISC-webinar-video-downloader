@@ -197,7 +197,11 @@ def pick_audio_format(formats_text):
 
 def download(page_url, out_dir, proxy=None, referer=None, fmt=None,
              height=None, audio_fmt=None, extra_args=None, quiet=False):
-    """Run yt-dlp with ffmpeg as the downloader. Returns the output path."""
+    """Run yt-dlp with ffmpeg as the downloader. Returns the output path.
+
+    ``fmt`` may already be a "video+audio" combination.  ``audio_fmt`` is an
+    explicit audio-only id to pair with it; when given it is appended to fmt.
+    """
     os.makedirs(out_dir, exist_ok=True)
     cmd = ytdlp() + ["--no-warnings", "--newline"]
     if proxy:
@@ -216,6 +220,10 @@ def download(page_url, out_dir, proxy=None, referer=None, fmt=None,
 
     if fmt:
         cmd += ["-f", fmt]
+    if audio_fmt and audio_fmt not in (fmt or ""):
+        cmd += ["-f", "%s+%s" % (fmt, audio_fmt) if fmt else audio_fmt]
+    if height:
+        cmd += ["--format-sort", "res:%d" % height]
     if extra_args:
         cmd += extra_args
 
@@ -346,7 +354,10 @@ def batch_download(args):
                 af = pick_audio_format(fmts)
                 if af:
                     fmt = fmt + "+" + af
-            download(url, subdir, args.proxy, referer, fmt=fmt)
+            elif args.audio_fmt:
+                # explicit --audio-fmt supplied and the picked video had no audio
+                fmt = fmt + "+" + args.audio_fmt
+            download(url, subdir, args.proxy, referer, fmt=fmt, height=args.height)
             out = find_output(subdir, video_id=info.get("vimeo_id") or info.get("youtube_id"))
             if not args.no_verify:
                 good, rep = verify(out)
@@ -355,8 +366,11 @@ def batch_download(args):
                     failed.append({"slug": slug, "error": "verify failed", "report": rep})
                     continue
             ok += 1
-        except Exception as e:  # noqa: BLE001
-            failed.append({"slug": slug, "error": str(e)[:300]})
+        except BaseException as e:  # noqa: BLE001
+            # BaseException, not Exception: download() raises SystemExit on
+            # yt-dlp failure, and SystemExit is NOT a subclass of Exception.
+            # Catching only Exception would let one bad video abort the whole batch.
+            failed.append({"slug": slug, "error": str(e)[:300] or repr(e)[:300]})
             print("   -> FAILED: %s" % str(e)[:200])
     print("\nbatch done: ok=%d skipped=%d failed=%d" % (ok, skipped, len(failed)))
     if failed:

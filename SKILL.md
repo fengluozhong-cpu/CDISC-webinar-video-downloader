@@ -15,17 +15,11 @@ agent_created: true
 
 ## 执行环境约定
 
-脚本用**绝对路径**调用，记 `$SKILL` = `C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader`：
+命令用**相对路径**调用，命令块首行已带 `cd` 到本 skill 目录
+（`C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader`）。
 
-```bash
-SKILL="C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader"
-python "$SKILL/scripts/probe_network.py" ...
-```
-
-在 skill 目录内可用相对路径；**在其他目录必须用绝对路径**，否则报 `can't open file`。
-
-`recalc.py` / `aigc_label.py` 在带版本号的插件缓存目录，**不要硬编码**，用
-`python "$SKILL/scripts/resolve_sheet_scripts.py" --shell` 取实际路径。
+`recalc.py` / `aigc_label.py` 在带版本号的插件缓存目录，**不要硬编码**，
+用 `python "scripts/resolve_sheet_scripts.py" --shell` 取实际路径。
 
 ---
 
@@ -36,7 +30,8 @@ python "$SKILL/scripts/probe_network.py" ...
 视频站点常被代理挡住。**先探测再动手**，否则会浪费大量时间在反复重试上。
 
 ```bash
-python "$SKILL/scripts/probe_network.py" https://player.vimeo.com/ https://vimeo.com/
+cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
+python "scripts/probe_network.py" https://player.vimeo.com/ https://vimeo.com/
 ```
 
 脚本自动读注册表 `ProxyServer` 找 SOCKS5 端口、扫常见端口、分别测「环境 HTTP_PROXY」
@@ -51,7 +46,8 @@ python "$SKILL/scripts/probe_network.py" https://player.vimeo.com/ https://vimeo
 ### 第 1 步：抓列表 → manifest.json
 
 ```bash
-python "$SKILL/scripts/harvest_events.py" \
+cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
+python "scripts/harvest_events.py" \
   --listing "https://site.org/events/webinars/public" \
   --base "https://site.org" \
   --out manifest.json --pages-dir pages --workers 6
@@ -77,7 +73,8 @@ python "$SKILL/scripts/harvest_events.py" \
 起一个本地 HTTP CONNECT 代理把流量转进 SOCKS5：
 
 ```bash
-python "$SKILL/scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
+cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
+python "scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
 ```
 
 - 端口用**高位**（≥1024），低位在 Windows 上 PermissionError。
@@ -90,14 +87,16 @@ python "$SKILL/scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
 **单个视频**：
 
 ```bash
-python "$SKILL/scripts/download_webinar.py" "https://site.org/events/webinar/foo" \
+cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
+python "scripts/download_webinar.py" "https://site.org/events/webinar/foo" \
   --proxy http://127.0.0.1:39411 --out videos
 ```
 
 **批量（manifest 全量）**：
 
 ```bash
-python "$SKILL/scripts/download_webinar.py" --manifest manifest.json \
+cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
+python "scripts/download_webinar.py" --manifest manifest.json \
   --proxy http://127.0.0.1:39411 --out videos \
   --skip-existing --height 720
 ```
@@ -116,7 +115,8 @@ python "$SKILL/scripts/download_webinar.py" --manifest manifest.json \
 ### 第 4 步：生成 Excel 清单
 
 ```bash
-python "$SKILL/scripts/build_index_xlsx.py" \
+cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
+python "scripts/build_index_xlsx.py" \
   --manifest manifest.json --out index.xlsx \
   --title "XX Webinar 视频清单" --keyword "SDTM" --videos-dir videos
 ```
@@ -128,7 +128,8 @@ python "$SKILL/scripts/build_index_xlsx.py" \
 
 ```bash
 # ① 公式重算 —— openpyxl 写的公式无缓存值，外部预览器会显示空白
-python "$SKILL/scripts/resolve_sheet_scripts.py" --shell
+cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
+python "scripts/resolve_sheet_scripts.py" --shell
 #   → 用输出的 recalc 命令
 # ② AIGC 标识 —— 必须在重算之后，否则被重新序列化覆盖
 #   → 用输出的 aigc_label 命令
@@ -161,29 +162,23 @@ python "$SKILL/scripts/resolve_sheet_scripts.py" --shell
 
 ## 🩺 失败模式：症状 → 一线修复 → 兜底
 
+高频 6 条（完整 20+ 条见 `references/troubleshooting.md`）：
+
 | 症状 | 一线修复 | 仍失败时 |
 |---|---|---|
-| `found 0 detail links` | 存下列表页 HTML，看真实 `<a href>` 形态，改 `extract_links()` | 该站是 SPA/JSON 接口 → 改用 API 抓取 |
-| 抓到的场次比基线少 | 查漏抓四因：a href 正配贪婪 / 日期容器层级 / slug 规则过宽 / 黑名单前缀误伤 | 加分页支持或改 API |
-| 抓到的场次比基线多 | 多为 hub 页，补进 `SKIP_SLUGS`（精确 slug） | 检查是否混入非 webinar 事件族 |
-| yt-dlp 报 403 | 起桥接（第 2 步）并 `--proxy http://127.0.0.1:39411` | 改 `--proxy socks5://127.0.0.1:7890` 直连给 yt-dlp |
+| `found 0 detail links` | 存下列表页 HTML 看真实 `<a href>` 形态，改 `extract_links()` | 该站是 SPA/JSON 接口 → 改用 API 抓取 |
+| 抓到的场次比基线少 | 查漏抓四因：a href 正则贪婪 / 日期容器层级 / slug 规则过宽 / 黑名单前缀误伤 | 加分页支持或改 API |
+| yt-dlp 报 403 | 起桥接（第 2 步）并 `--proxy http://127.0.0.1:39411` | 查 `probe_network.py` 的 ACTION 行；仍失败说明目标站不可达 |
 | yt-dlp 报 embed-only | 换成承载 iframe 的页面 URL | 该视频确实无公开页 → 记为「无公开录像」 |
-| `Requested format is not available` | `--list-formats` 看实际可用档 | 指定 `--fmt "<video-id>+<audio-id>"` |
 | 下载出 0 字节但退出码 0 | **查文件大小**，不只看 returncode | 换 `--height` 降档重试 |
-| 下载中断 / 反复重试 | 降档 `--height 720`；确认桥接进程还活着 | 桥接被回收则重启它 |
-| 视频没声音 | 选带音轨格式；`--audio-fmt` 补 audio-only 后合流 | 显式 `--fmt "video+audio"` |
-| `Error during demuxing: I/O error` | 以**全片解码**为准，不看文件大小 | 重下该场 |
 | recalc 返回 `error` 键（无 `status`） | 装 `formulas` 引擎；或去掉外部工作簿引用 | 提示用户手动装 LibreOffice |
-| recalc 返回 `external_link_cells` | 回 `build_index_xlsx.py` 去掉外部工作簿引用 | 不要用 `--force` 强刷 |
-| 演讲人 / 日期为空 | 该站 DOM 不同 → 按 `references/site-profiles.md` 改提取 | 手工补 manifest 字段 |
-
-完整排障见 `references/troubleshooting.md`。
 
 ## 脚本清单
 
 `probe_network.py`（探测出口）· `harvest_events.py`（抓列表→manifest）·
 `socks_bridge.py`（SOCKS5 桥）· `download_webinar.py`（下载/批量）·
-`build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）
+`build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）·
+`test_date_parse.py`（日期解析回归测试，改过 harvest 后必跑）
 
-排障细节见 `references/troubleshooting.md`；站点 DOM 画像与换站适配四步见
-`references/site-profiles.md`。改过 `harvest_events.py` 后必跑 `test_date_parse.py`。
+排障见 `references/troubleshooting.md`；站点 DOM 画像与换站适配四步见
+`references/site-profiles.md`。
