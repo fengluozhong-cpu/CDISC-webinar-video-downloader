@@ -166,10 +166,13 @@ def main():
                             # a file is "downloaded" only if the report vouches for it.
                             # The report may key entries by slug or by video id.
                             if report_present:
-                                ok = verified.get(slug)
-                                if ok is None:
-                                    ok = verified.get(vid)
-                                if ok is None or not ok:
+                                # The report may key an entry by slug OR by video id
+                                # (single-video runs have no slug).  A video is
+                                # "downloaded" if ANY of its keys was verified --
+                                # otherwise a stale ok=False under the slug would
+                                # mask a successful ok=True under the video id.
+                                oks = [verified[k] for k in (slug, vid) if k in verified]
+                                if not oks or not any(oks):
                                     continue
                             rel = os.path.relpath(os.path.join(root, fn), args.videos_dir)
                             # key by (slug, path) -- two files with the same name in

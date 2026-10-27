@@ -270,4 +270,4 @@ python "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader/script
 ### 症状：演讲人 / 日期为空
 
 **解法**：该站 DOM 不同 → 按 references/site-profiles.md 改提取逻辑。
-日期提取改动后必跑 `scripts/test_date_parse.py` 回归。
+日期提取改动后必跑 `tests/test_date_parse.py` 回归。

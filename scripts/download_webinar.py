@@ -453,7 +453,7 @@ def batch_download(args):
             print("  FAILED %s: %s" % (f["slug"], f["error"]))
     if args.report:
         # merge via the single shared implementation (never overwrite)
-        rs = report_store.update(args.report, videos=report, failures=failed)
+        rs = report_store.update(args.report, videos=report, failures=failed, skipped=skipped)
         print("verification report written to %s (%d entries, %d failed)"
               % (args.report, len(rs["videos"]), rs["failed"]))
     return 0 if not failed else 1
@@ -552,10 +552,10 @@ def main():
         vkey = info.get("vimeo_id") or info.get("youtube_id") or os.path.basename(args.out)
         skey = getattr(args, "slug", None) or vkey
         entry = {"ok": ok, "file": out, "report": rep}
-        # write under BOTH keys so a lookup by slug OR by video id finds it
+        # ONE key per video: writing both a slug and a video id made the
+        # counters double-count.  build_index_xlsx.py looks up by slug AND by
+        # video id, so a single key is enough either way.
         entries = {skey: entry}
-        if vkey and vkey != skey:
-            entries[vkey] = entry
         fails = [] if ok else [{"slug": skey, "error": "verify failed"}]
         report_store.update(args.report, videos=entries, failures=fails)
         print("verification report written to %s" % args.report)

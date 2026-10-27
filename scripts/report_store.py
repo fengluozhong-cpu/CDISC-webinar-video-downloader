@@ -36,15 +36,21 @@ def load(path):
         return {}
 
 
-def merge(prev, videos=None, failures=None):
+def merge(prev, videos=None, failures=None, skipped=0):
     """Merge this run's results into a previous report.
 
     videos:   {key: entry} entries produced by THIS run -- they win over
               previous entries for the same key.
     failures: [{slug, error, ...}] failures produced by THIS run.
+    skipped:  number of entries skipped by THIS run.
 
     A previous failure row for a slug that this run fixed is DROPPED, so the
     report never says "videos[x].ok == True" and "failures contains x" at once.
+
+    NOTE on alias keys: one video may be stored under BOTH its slug and its
+    video id (a single-video run has no slug).  Counters therefore count
+    DISTINCT ENTITIES, not raw keys -- otherwise one video would be counted
+    twice.
     """
     videos = videos or {}
     failures = list(failures or [])
@@ -55,27 +61,36 @@ def merge(prev, videos=None, failures=None):
     # Every slug this run covered supersedes the previous outcome for that
     # slug -- so a previous failure row for it is stale and must go. Otherwise
     # the report would say "videos[x].ok == True" AND "failures contains x".
+    # Alias keys (slug + video id) for the SAME video are collapsed: the
+    # failure is attributed to the slug, so the video id row disappears too.
     covered = set(videos.keys())
-    live = [f for f in failures if f.get("slug") not in covered]
+    # One key per video is written by the callers, so a key IS the identity.
+
+    def canon(slug):
+        return str(slug)
+
+    live = [f for f in failures if canon(f.get("slug")) not in covered]
     prev_failures = [f for f in (prev.get("failures") or [])
-                     if f.get("slug") not in covered]
+                     if canon(f.get("slug")) not in covered]
 
     all_failures = prev_failures + live
 
-    # recompute counters from the merged data so they cannot drift
+    # Count DISTINCT KEYS -- one key per video, so this is exact.
     ok_count = sum(1 for e in merged_videos.values() if e.get("ok"))
-    bad = [k for k, e in merged_videos.items() if not e.get("ok")]
-    reported = {f.get("slug") for f in all_failures}
-    for b in bad:
-        if b not in reported:
-            all_failures.append({"slug": b, "error": "verification failed"})
+
+    reported = {canon(f.get("slug")) for f in all_failures}
+    for k, e in merged_videos.items():
+        if not e.get("ok") and canon(k) not in reported:
+            all_failures.append({"slug": k, "error": "verification failed"})
+
+    fail_entities = {canon(f.get("slug")) for f in all_failures}
 
     return {
         "videos": merged_videos,
         "failures": all_failures,
         "ok": ok_count,
-        "skipped": int(prev.get("skipped") or 0),
-        "failed": len(all_failures),
+        "skipped": int(prev.get("skipped") or 0) + int(skipped or 0),
+        "failed": len(fail_entities),
     }
 
 
@@ -91,8 +106,8 @@ def write(path, payload):
     return payload
 
 
-def update(path, videos=None, failures=None):
+def update(path, videos=None, failures=None, skipped=0):
     """Load -> merge -> write. The only entry point callers should use."""
     prev = load(path)
-    payload = merge(prev, videos, failures)
+    payload = merge(prev, videos, failures, skipped=skipped)
     return write(path, payload)
