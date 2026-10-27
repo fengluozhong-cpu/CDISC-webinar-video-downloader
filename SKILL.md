@@ -80,7 +80,7 @@ python "scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
 
 **单个视频**：
 
-单个视频也写 `--report`（校验结论同样落盘，第 4 步据此判定）：
+单个视频也写 `--report`（多次运行会**合并**进同一份 report）：
 
 ```bash
 cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
@@ -99,9 +99,10 @@ python "scripts/download_webinar.py" --manifest manifest.json \
 
 批量模式每场下载到 `videos/<slug>/` 独立子目录，单场失败不影响其余，末尾打印 `ok=N skipped=N failed=N`。
 
-- `--report verify_report.json` 落盘校验结论，第 4 步传 `--report` 读它：
-  **校验失败的文件不会被算成「已下载」**。
-- `--skip-existing` 跳过前会**重新校验**，坏文件移到 `videos/_failed/` 并重下。
+- `--report` 落盘校验结论，第 4 步读它：**校验失败的文件不算「已下载」**；
+  report 缺失时第 4 步**报错退出**而非降级。
+- `--skip-existing` 跳过前**重新校验**，坏文件移到 `videos/_failed/` 并重下；
+  跳过的文件也写进 report（report 是第 4 步的唯一依据）。
 - `--height 720` 是**偏好不是硬过滤** —— 无该档位时自动回退最佳可用档。
 
 脚本自动处理：embed-only 页面识别、referer 设置、格式选择、音视频合流、**全片解码校验**。
@@ -123,8 +124,8 @@ python "scripts/build_index_xlsx.py" \
 ```
 
 产出 4 个 sheet：**汇总**（KPI + 年度/主题分布 + 柱状图）、**专题**（按 keyword 过滤）、
-**下载说明**、**明细**（全字段 + 可点链接 + 冻结表头 + 筛选）。统计列是**活公式**，引用明细行。
-传 `--report` 时校验失败的文件不计入「已下载」——这是防止「清单说下好了、实际是坏的」的关键。
+**下载说明**、**明细**（全字段 + 可点链接 + 冻结表头 + 筛选）。统计列是**活公式**。
+传 `--report` 时校验失败的文件不计入「已下载」。
 
 **必须按顺序做后两步**（顺序反了会被覆盖）：
 
@@ -161,7 +162,7 @@ python "scripts/resolve_sheet_scripts.py" --shell
 | 9 | 只看退出码判断重算 | `errors_found` 退出码也是 0，会误判通过 | 只看 JSON `status` + `total_errors` |
 | 10 | 改 `extract_links()` 不做双向差集 | 静默漏抓或误抓 | 人工基线差集验收，两边都应为 0 |
 | 11 | 批量下载不降档 | 70 场 1080p ≈ 35GB + 逐个解码极慢 | `--height 720` + 先 `--limit 2` 试跑 |
-| 12 | 只按「文件存在」判断已下载 | 坏文件会被算成已下载并交付 | 必须用 `--report` 贯通校验结论；report 缺失时脚本会**报错退出**而非降级 |
+| 12 | 只按「文件存在」判断已下载 | 坏文件会被算成已下载并交付 | 必须用 `--report` 贯通校验结论 |
 
 ## 🩺 失败模式：症状 → 一线修复 → 兜底
 

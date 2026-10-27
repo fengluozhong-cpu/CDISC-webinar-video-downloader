@@ -145,7 +145,6 @@ def main():
             verified[slug] = bool(info.get("ok"))
         print("read verification report: %d entries (%d failed)"
               % (len(verified), sum(1 for v in verified.values() if not v)))
-
     local = {}
     if os.path.isdir(args.videos_dir):
         for root, _dirs, files in os.walk(args.videos_dir):
@@ -160,13 +159,16 @@ def main():
                     for vv in (v.get("videos") or []):
                         if vv.get("id") and str(vv["id"]) in fn:
                             slug = v.get("slug") or ""
+                            vid = str(vv.get("id"))
                             # When a report exists it is authoritative:
-                            # a file is "downloaded" only if the report says it verified.
+                            # a file is "downloaded" only if the report vouches for it.
+                            # The report may key entries by slug or by video id.
                             if verified:
-                                if slug not in verified:
-                                    continue          # not covered by the report
-                                if not verified[slug]:
-                                    continue          # failed verification
+                                ok = verified.get(slug)
+                                if ok is None:
+                                    ok = verified.get(vid)
+                                if ok is None or not ok:
+                                    continue
                             rel = os.path.relpath(os.path.join(root, fn), args.videos_dir)
                             local[fn] = (v, rel)
 

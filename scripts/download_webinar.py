@@ -375,12 +375,16 @@ def batch_download(args):
                 if good:
                     print("[%d/%d] SKIP %s (already downloaded)" % (i, len(targets), slug))
                     skipped += 1
+                    # MUST record it: the report is authoritative for the Excel
+                    # step, so a skipped-but-verified file has to appear in it.
+                    report[slug] = {"ok": True, "file": existing, "report": rep or {}}
                     continue
                 # failed verification -> quarantine it and fall THROUGH to re-download
                 q = _quarantine(existing, args.out)
                 print("[%d/%d] %s exists but FAILED verification -> quarantined to %s, re-downloading"
                       % (i, len(targets), slug, q))
-                report[slug] = {"ok": False, "file": None, "report": {"error": "previous file failed verification"}}
+                report[slug] = {"ok": False, "file": None,
+                                "report": {"error": "previous file failed verification; re-downloading"}}
                 failed.append({"slug": slug, "error": "previous file failed verification; re-downloading"})
         print("[%d/%d] %s" % (i, len(targets), slug))
         referer = args.referer
@@ -415,6 +419,11 @@ def batch_download(args):
                     continue
             else:
                 report[slug] = {"ok": True, "file": out, "report": {}}
+            # the re-download succeeded -> drop the earlier "previous file failed"
+            # entry so the report does not contradict itself (ok=1 AND failed=1)
+            failed = [f for f in failed
+                      if not (f.get("slug") == slug
+                              and "previous file failed" in (f.get("error") or ""))]
             ok += 1
         except BaseException as e:  # noqa: BLE001
             # BaseException, not Exception: download() raises SystemExit on
@@ -521,13 +530,31 @@ def main():
             q = _quarantine(out, args.out) if out else None
             print("verification FAILED -> quarantined to %s" % q)
     if args.report:
-        slug = (info.get("vimeo_id") or info.get("youtube_id")
-                or os.path.basename(args.out.rstrip("/\\")))
+        # Key by SLUG when we know it (--manifest batch mode), else by video id.
+        # build_index_xlsx.py looks up by slug first, then by video id.
+        vkey = info.get("vimeo_id") or info.get("youtube_id") or os.path.basename(args.out)
+        skey = args.slug
+        entry = {"ok": ok, "file": out, "report": rep}
+        # MERGE into an existing report -- never clobber a batch run's results
+        payload = {"ok": 1 if ok else 0, "skipped": 0, "failed": 0 if ok else 1,
+                   "failures": [] if ok else [{"slug": skey or vkey, "error": "verify failed"}],
+                   "videos": {}}
+        if os.path.exists(args.report):
+            try:
+                with open(args.report, encoding="utf-8") as f:
+                    prev = json.load(f)
+                payload["videos"].update(prev.get("videos") or {})
+                payload["failures"] = list(prev.get("failures") or []) + payload["failures"]
+                payload["ok"] = int(prev.get("ok") or 0) + payload["ok"]
+                payload["skipped"] = int(prev.get("skipped") or 0)
+                payload["failed"] = len(payload["failures"])
+            except (OSError, ValueError):
+                pass
+        payload["videos"][skey or vkey] = entry
+        if skey and skey != vkey:
+            payload["videos"][vkey] = entry
         with open(args.report, "w", encoding="utf-8") as f:
-            json.dump({"ok": 1 if ok else 0, "skipped": 0, "failed": 0 if ok else 1,
-                       "failures": [] if ok else [{"slug": slug, "error": "verify failed"}],
-                       "videos": {slug: {"ok": ok, "file": out, "report": rep}}},
-                      f, ensure_ascii=False, indent=1)
+            json.dump(payload, f, ensure_ascii=False, indent=1)
         print("verification report written to %s" % args.report)
     if not ok:
         raise SystemExit("verification FAILED")
