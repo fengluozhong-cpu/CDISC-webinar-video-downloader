@@ -139,8 +139,12 @@ def choose_format(formats_text, want_height=None, want_lang=None):
 
     The -F table layout varies by site, so parse defensively:
     look for a WxH token, a frame-rate token, and codec tokens anywhere on the line.
+
+    ``want_height`` is a PREFERENCE, not a hard filter: if the site has no
+    rendition at exactly that height, fall back to the best available instead
+    of failing the whole batch.
     """
-    best = None
+    cands = []
     for raw in formats_text.splitlines():
         line = raw.strip()
         if not line or line.startswith(("ID", "---")) or "EXT RESOLUTION" in line:
@@ -157,24 +161,20 @@ def choose_format(formats_text, want_height=None, want_lang=None):
         fm = re.search(r"\b(\d{2,3})\s*(?:fps)?\s*(?:\||$)", line)
         if fm and fm.group(1) != "0":
             fps = int(fm.group(1))
-        # acodec column: "video only" / "aac" / "unknown"
         low = line.lower()
         has_audio = "video only" not in low
         if "audio only" in low:
             continue
-        vcodec = ""
-        acodec = ""
         vm = re.search(r"\|\s*([a-z0-9_.-]+)\s+(?:\d+k)?\s+(\S+)", low)
-        if vm:
-            vcodec, acodec = vm.group(1), vm.group(2)
-        if want_height and h != want_height:
-            continue
-        score = (has_audio, h, fps)
-        if best is None or score > best[0]:
-            best = (score, fid, h, has_audio, vcodec, acodec)
-    if not best:
+        vcodec, acodec = (vm.group(1), vm.group(2)) if vm else ("", "")
+        # score: has_audio first, then height, then fps
+        cands.append(((has_audio, h, fps), fid, h, has_audio, vcodec, acodec))
+
+    if not cands:
         return None
-    return best
+    exact = [c for c in cands if want_height and c[2] == want_height]
+    pool = exact or cands
+    return max(pool, key=lambda c: c[0])
 
 
 def pick_audio_format(formats_text):
@@ -264,7 +264,7 @@ def verify(path):
     size = os.path.getsize(path)
     fdir = ffmpeg_dir()
     if not fdir:
-        return False, {"error": "ffmpeg not found"}
+        return False, {"error": "ffmpeg not found", "ok": False}
     probe = os.path.join(fdir, "ffprobe.exe")
     if not os.path.exists(probe):
         probe = os.path.join(fdir, "ffprobe")
@@ -281,11 +281,23 @@ def verify(path):
         {k: s.get(k) for k in ("codec_type", "codec_name", "width", "height") if s.get(k)}
         for s in data.get("streams", [])
     ]
+    has_audio = any(s.get("codec_type") == "audio" for s in data.get("streams", []))
+    has_video = any(s.get("codec_type") == "video" for s in data.get("streams", []))
+    info["has_audio"] = has_audio
+    info["has_video"] = has_video
+    if not data.get("streams"):
+        info["error"] = "ffprobe returned no streams (file unreadable or corrupt)"
+        info["ok"] = False
+        return False, info
     # full decode pass: catches truncated/corrupt payloads
     dec_out, _ = run([os.path.join(fdir, "ffmpeg.exe"), "-v", "error", "-i", path, "-f", "null", "-"],
                      timeout=3600)
     info["decode_errors"] = len([l for l in (dec_out or "").splitlines() if l.strip()])
-    info["ok"] = size > 100000 and info["duration_sec"] > 1 and info["decode_errors"] == 0
+    # a silent file is NOT a valid deliverable -> require an audio track
+    # size floor is deliberately low: the real guard is duration + streams +
+    # decode; a 100KB floor would reject legitimately short clips.
+    info["ok"] = (size > 1024 and info["duration_sec"] > 0.5
+                  and info["decode_errors"] == 0 and has_video and has_audio)
     return info["ok"], info
 
 
@@ -351,12 +363,11 @@ def batch_download(args):
                 continue
             _, fmt, h, has_audio = pick[0], pick[1], pick[2], pick[3]
             if not has_audio:
-                af = pick_audio_format(fmts)
+                # video-only rendition: pair it with an audio track.
+                # Prefer the user's explicit --audio-fmt, else auto-pick.
+                af = args.audio_fmt or pick_audio_format(fmts)
                 if af:
                     fmt = fmt + "+" + af
-            elif args.audio_fmt:
-                # explicit --audio-fmt supplied and the picked video had no audio
-                fmt = fmt + "+" + args.audio_fmt
             download(url, subdir, args.proxy, referer, fmt=fmt, height=args.height)
             out = find_output(subdir, video_id=info.get("vimeo_id") or info.get("youtube_id"))
             if not args.no_verify:
@@ -438,13 +449,15 @@ def main():
         print("picked format: %s (%sp, audio=%s)" % (fmt, h, has_audio))
         audio_fmt = args.audio_fmt
         if not has_audio:
-            audio_fmt = pick_audio_format(fmts)
+            # video-only: prefer the user's explicit --audio-fmt, else auto-pick
+            audio_fmt = args.audio_fmt or pick_audio_format(fmts)
             if audio_fmt:
                 fmt = fmt + "+" + audio_fmt
                 print("muxing with audio: %s" % audio_fmt)
 
     t0 = time.time()
-    download(args.url, args.out, args.proxy, referer, fmt=fmt)
+    download(args.url, args.out, args.proxy, referer, fmt=fmt,
+             height=args.height, audio_fmt=audio_fmt)
     print("download finished in %.1f min" % ((time.time() - t0) / 60))
 
     out = find_output(args.out, video_id=info.get("vimeo_id") or info.get("youtube_id"))
