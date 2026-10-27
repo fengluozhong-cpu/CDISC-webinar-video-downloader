@@ -281,9 +281,97 @@ def verify(path):
     return info["ok"], info
 
 
+def batch_download(args):
+    """Download every video entry in a manifest, one page URL at a time.
+
+    Each event is downloaded into its own subdirectory so that find_output()
+    can never pick up a sibling's file, and a failure on one entry does not
+    abort the rest.
+    """
+    with open(args.manifest, encoding="utf-8") as f:
+        data = json.load(f)
+    events = data.get("events") or data.get("rows") or []
+    targets = []
+    for ev in events:
+        vids = ev.get("videos") or []
+        if not vids:
+            continue
+        url = ev.get("url")
+        if not url:
+            continue
+        targets.append((ev, url))
+    if args.limit:
+        targets = targets[:args.limit]
+
+    print("batch: %d entries with video (of %d events)" % (len(targets), len(events)))
+    if not targets:
+        return 0
+
+    ok, failed, skipped = 0, [], 0
+    for i, (ev, url) in enumerate(targets, 1):
+        slug = ev.get("slug") or ("entry-%d" % i)
+        subdir = os.path.join(args.out, slug)
+        vid = (ev.get("videos") or [{}])[0].get("id")
+        if args.skip_existing and vid:
+            # look in the per-slug subdir (where this run writes) AND the flat
+            # --out dir (where a previous single-URL run may have put it)
+            found = []
+            for d in (subdir, args.out):
+                if not os.path.isdir(d):
+                    continue
+                for f in os.listdir(d):
+                    if str(vid) in f and f.lower().endswith((".mp4", ".mkv", ".webm", ".m4v")) \
+                            and ".part" not in f:
+                        found.append(os.path.join(d, f))
+            if found:
+                print("[%d/%d] SKIP %s (already downloaded: %s)"
+                      % (i, len(targets), slug, os.path.basename(found[0])))
+                skipped += 1
+                continue
+        print("[%d/%d] %s" % (i, len(targets), slug))
+        referer = args.referer
+        if not referer:
+            m = re.match(r"^(https?://[^/]+)", url)
+            referer = m.group(1) + "/" if m else None
+        try:
+            info = detect_page(url, proxy=args.proxy)
+            fmts = list_formats(url, args.proxy, referer)
+            pick = choose_format(fmts, want_height=args.height)
+            if not pick:
+                failed.append({"slug": slug, "error": "no suitable format"})
+                print("   -> no suitable format, skipped")
+                continue
+            _, fmt, h, has_audio = pick[0], pick[1], pick[2], pick[3]
+            if not has_audio:
+                af = pick_audio_format(fmts)
+                if af:
+                    fmt = fmt + "+" + af
+            download(url, subdir, args.proxy, referer, fmt=fmt)
+            out = find_output(subdir, video_id=info.get("vimeo_id") or info.get("youtube_id"))
+            if not args.no_verify:
+                good, rep = verify(out)
+                print("   -> %s %s" % (out, json.dumps(rep, ensure_ascii=False)))
+                if not good:
+                    failed.append({"slug": slug, "error": "verify failed", "report": rep})
+                    continue
+            ok += 1
+        except Exception as e:  # noqa: BLE001
+            failed.append({"slug": slug, "error": str(e)[:300]})
+            print("   -> FAILED: %s" % str(e)[:200])
+    print("\nbatch done: ok=%d skipped=%d failed=%d" % (ok, skipped, len(failed)))
+    if failed:
+        for f in failed:
+            print("  FAILED %s: %s" % (f["slug"], f["error"]))
+    return 0 if not failed else 1
+
+
 def main():
     ap = argparse.ArgumentParser(description="Download a webinar video from an embedding page")
-    ap.add_argument("url", help="the page that EMBEDS the video (not the bare player URL)")
+    ap.add_argument("url", nargs="?", help="the page that EMBEDS the video (not the bare player URL). "
+                                           "Omit when using --manifest.")
+    ap.add_argument("--manifest", default=None,
+                    help="manifest.json from harvest_events.py -- download every entry "
+                         "that has a video (batch mode)")
     ap.add_argument("--out", default="videos", help="output directory")
     ap.add_argument("--proxy", default=None, help="e.g. http://127.0.0.1:39411 (bridge) "
                                                   "or socks5://127.0.0.1:7890")
@@ -293,10 +381,18 @@ def main():
     ap.add_argument("--audio-fmt", default=None, help="explicit audio-only format id to mux")
     ap.add_argument("--list-formats", action="store_true")
     ap.add_argument("--no-verify", action="store_true")
+    ap.add_argument("--skip-existing", action="store_true",
+                    help="batch mode: skip videos already present in --out")
+    ap.add_argument("--limit", type=int, default=0, help="batch mode: max videos to fetch")
     args = ap.parse_args()
 
     if not ytdlp():
         raise SystemExit("yt-dlp not found. Install: pip install yt-dlp")
+    if not args.url and not args.manifest:
+        raise SystemExit("provide a page URL or --manifest manifest.json")
+
+    if args.manifest:
+        return batch_download(args)
 
     referer = args.referer
     if not referer:

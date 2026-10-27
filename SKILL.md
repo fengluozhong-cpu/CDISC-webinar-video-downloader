@@ -6,159 +6,184 @@ agent_created: true
 
 # Webinar 视频批量下载 + 清单索引
 
-把"抓活动列表 → 定位视频源 → 绕过网络限制下载 → 生成 Excel 清单"做成一条可复用的流水线。
+把「抓活动列表 → 定位视频源 → 绕过网络限制下载 → 生成 Excel 清单」做成一条可复用的流水线。
 
 ## 何时使用
 
-- 「帮我下载 X 站点的 webinar 视频」
-- 「抓这个活动列表页，生成一份清单表格」
-- 「这些会议录像在 Vimeo 上但直接下载报 embed-only 错误」
-- 视频托管站在本机代理白名单之外（下载报 403 / 连不上）
+「下载 X 站点的 webinar 视频」「抓活动列表生成清单」「Vimeo 录像报 embed-only 错误」
+「批量下载某站点会议录像」「下载线上研讨会视频」——以及视频站被代理挡住（403 / 连不上）时。
+
+## 执行环境约定
+
+脚本用**绝对路径**调用，记 `$SKILL` = `C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader`：
+
+```bash
+SKILL="C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader"
+python "$SKILL/scripts/probe_network.py" ...
+```
+
+在 skill 目录内可用相对路径；**在其他目录必须用绝对路径**，否则报 `can't open file`。
+
+`recalc.py` / `aigc_label.py` 在带版本号的插件缓存目录，**不要硬编码**，用
+`python "$SKILL/scripts/resolve_sheet_scripts.py" --shell` 取实际路径。
+
+---
 
 ## 执行流程
 
-### 第 0 步：先探测网络（不要跳过）
+### 第 0 步：探测网络出口（不要跳过）
 
-视频站点经常被代理挡住。**先探测再动手**，否则会浪费大量时间在反复重试上。
+视频站点常被代理挡住。**先探测再动手**，否则会浪费大量时间在反复重试上。
 
 ```bash
-python scripts/probe_network.py https://player.vimeo.com/ https://vimeo.com/
+python "$SKILL/scripts/probe_network.py" https://player.vimeo.com/ https://vimeo.com/
 ```
 
-脚本会自动读取 Windows 注册表的 `ProxyServer` 找出 SOCKS5 端口、扫描常见端口、
-分别测试「环境 HTTP_PROXY」和「SOCKS5」两条路径，最后给出行动建议。
+脚本自动读注册表 `ProxyServer` 找 SOCKS5 端口、扫常见端口、分别测「环境 HTTP_PROXY」
+和「SOCKS5」两条路径，末尾给出 ACTION 建议。
 
-典型输出含义：
-
-| 现象 | 结论 |
-|---|---|
-| ambient 代理 403/0，SOCKS5 200 | 需要走 SOCKS5，且 ffmpeg 需要桥接（见第 2 步） |
-| ambient 代理 200 | 直接用环境代理即可 |
-| 全部失败 | 代理没开 / 目标不可达，先解决网络再谈下载 |
+| 现象 | 结论 | 下一步 |
+|---|---|---|
+| ambient 403/0，SOCKS5 200 | 环境代理挡了视频站 | → 第 2 步起桥接 |
+| ambient 200 | 环境代理够用 | 跳过第 2 步，`--proxy` 留空 |
+| 全部失败 | 代理没开 / 目标不可达 | 停下来查网络，不要硬下 |
 
 ### 第 1 步：抓列表 → manifest.json
 
 ```bash
-python scripts/harvest_events.py \
+python "$SKILL/scripts/harvest_events.py" \
   --listing "https://site.org/events/webinars/public" \
   --base "https://site.org" \
   --out manifest.json --pages-dir pages --workers 6
 ```
 
-产出 `manifest.json`（结构化事件数组）与 `pages/`（详情页 HTML 缓存，可重复利用）。
+> `--proxy` **等第 2 步起好桥接后再补**（见第 2 步末尾）。目标站直连可达时不需要它；
+> 被代理挡时先起桥接再回来加上，否则连不上会报 `WinError 10061`。
 
-视频识别是**平台无关**的：Vimeo / YouTube / Wistia / 原生 `<video>` / `.m3u8` / `.mp4` 都会被抓到。
+产出 `manifest.json`（`events[]` 数组，每项含 `slug/title/date/videos/presenters/attachments`）
+与 `pages/`（详情页 HTML 缓存，可重复利用）。`--proxy` 在列表页被代理挡时必传。
+视频识别**平台无关**：Vimeo / YouTube / Wistia / 原生 `<video>` / `.m3u8` / `.mp4` 都能抓到。
 
-**若提示 `found 0 detail links`**：说明该站的链接结构不同，打开 `pages/` 里的列表页 HTML 看
-真实 `<a href>` 形态，然后改 `harvest_events.py` 里的 `extract_links()` 正则，重跑。
+> 🔴 **CHECKPOINT 1 · 改代码前**
+> 抓到结果后先核对数量与基线。**若 `found 0 detail links` 或数量明显偏少，
+> 必须先把「改 `extract_links()` 正则」告诉用户并等确认**，再改脚本。
+> 改完用**双向差集**验收（漏抓=基线有而 manifest 没有；误抓=manifest 有而基线没有），
+> 两者都应为 0。详见 `references/site-profiles.md`。
+>
+> 漏抓比误抓危险 —— 误抓只多几行，漏抓会让清单静默不完整。
 
 ### 第 2 步：起 SOCKS5 → HTTP 桥接（ffmpeg 必需）
-
 **ffmpeg 不支持 SOCKS5**。yt-dlp 用 `--downloader ffmpeg` 时会直连 → 403。
-解法是起一个本地 HTTP CONNECT 代理把流量转进 SOCKS5：
+起一个本地 HTTP CONNECT 代理把流量转进 SOCKS5：
 
 ```bash
-python scripts/socks_bridge.py --listen-port 39411 --socks-port 7890
+python "$SKILL/scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
 ```
 
-- 端口用**高位**（≥1024），低位端口在 Windows 上会 PermissionError。
-- 这个脚本**会阻塞**，用后台任务跑，或 `run_in_background`。
+- 端口用**高位**（≥1024），低位在 Windows 上 PermissionError。
+- 该脚本**会阻塞**，用后台任务跑。
 - 验证：`curl -x http://127.0.0.1:39411 -o /dev/null -w "%{http_code}" https://vimeo.com/`
-
+- 桥接起好后，**回到第 1 步给 `harvest_events.py` 补上 `--proxy http://127.0.0.1:39411` 重跑**
+  （列表页被挡时抓取阶段就会失败）。
 ### 第 3 步：下载
 
+**单个视频**：
+
 ```bash
-python scripts/download_webinar.py "https://site.org/events/webinar/foo" \
-  --proxy http://127.0.0.1:39411 \
-  --out videos
+python "$SKILL/scripts/download_webinar.py" "https://site.org/events/webinar/foo" \
+  --proxy http://127.0.0.1:39411 --out videos
 ```
 
-脚本自动处理：embed-only 页面识别、referer 设置、格式选择、音频视频合流、**全片解码校验**。
-加 `--list-formats` 先看可用清晰度；`--height 720` 降档省时间。
+**批量（manifest 全量）**：
+
+```bash
+python "$SKILL/scripts/download_webinar.py" --manifest manifest.json \
+  --proxy http://127.0.0.1:39411 --out videos \
+  --skip-existing --height 720
+```
+
+批量模式每场下载到 `videos/<slug>/` 独立子目录，单场失败不影响其余，
+末尾打印 `ok=N skipped=N failed=N`。
+
+脚本自动处理：embed-only 页面识别、referer 设置、格式选择、音视频合流、**全片解码校验**。
+`--list-formats` 看清晰度；`--height 720` 降档省时间；`--skip-existing` 断点续跑。
+
+> 🔴 **CHECKPOINT 2 · 批量下载前**
+> 场次多时（如 70+ 场、每场 500MB ≈ 35GB），**先把待下载清单与预计体积报给用户确认**，
+> 或先 `--limit 2` 试跑一场验证链路，确认无误再放开跑。
+> 默认选最高分辨率 + 逐个全片解码校验，**大清单务必先降档**（`--height 720`）。
 
 ### 第 4 步：生成 Excel 清单
 
 ```bash
-python scripts/build_index_xlsx.py \
+python "$SKILL/scripts/build_index_xlsx.py" \
   --manifest manifest.json --out index.xlsx \
-  --title "XX Webinar 视频清单" --keyword "SDTM"
+  --title "XX Webinar 视频清单" --keyword "SDTM" --videos-dir videos
 ```
 
 产出 4 个 sheet：**汇总**（KPI + 年度/主题分布 + 柱状图）、**专题**（按 keyword 过滤）、
 **下载说明**、**明细**（全字段 + 可点链接 + 冻结表头 + 筛选）。统计列是**活公式**，引用明细行。
 
-生成后必须做公式重算（openpyxl 写入的公式无缓存值，外部预览会显示空白）：
+**必须按顺序做后两步**（顺序反了会被覆盖）：
 
 ```bash
-python "<sheetagent>/skills/workbuddy-sheet-generation/scripts/recalc.py" index.xlsx 60
+# ① 公式重算 —— openpyxl 写的公式无缓存值，外部预览器会显示空白
+python "$SKILL/scripts/resolve_sheet_scripts.py" --shell
+#   → 用输出的 recalc 命令
+# ② AIGC 标识 —— 必须在重算之后，否则被重新序列化覆盖
+#   → 用输出的 aigc_label 命令
 ```
 
-判定标准只看 JSON：`status=success` 且 `total_errors=0` 才算通过（**不要看退出码**，
-`errors_found` 的退出码是 0）。
+判定标准只看 JSON：`status=success` 且 `total_errors=0` 才算通过。
+**不要看退出码** —— `errors_found` 的退出码也是 0。
 
-## 🚫 四个致命坑（务必规避）
+**交付前自检**：视频 > 100KB 且 `ffprobe` 读得出时长 · 全片解码零错误
+（`ffmpeg -v error -i out.mp4 -f null -`）· Excel `total_errors=0` · 已写 AIGC 标识 ·
+用 `present_files` 交付视频 + 表格。
 
-### 1. Vimeo 是 embed-only
+---
 
-直传 `https://player.vimeo.com/video/123456` 会报：
+## 🚫 不要做的动作
 
-```
-ERROR: Cannot download embed-only video without embedding URL.
-```
+| # | 不要 | 后果 | 改用 |
+|---|---|---|---|
+| 1 | 改全局 `HTTP_PROXY` 环境变量 | 白名单代理按域名放行，改全局会搞坏别的任务 | 命令级 `--proxy` |
+| 2 | 直传 `player.vimeo.com/video/<id>` | `Cannot download embed-only video` | 承载 iframe 的**页面 URL** |
+| 3 | 让 ffmpeg 直连 SOCKS5，或用 `-x http://127.0.0.1:7890` 连 SOCKS5 端口 | ffmpeg 静默忽略 socks5 → 直连 → 403；协议错则连接失败 | 起 `socks_bridge.py` 用 `--proxy http://127.0.0.1:39411`；curl 用 `--socks5` |
+| 4 | 用 yt-dlp 默认 native HLS 下载器 | 数百 `.part-FragN` 触发 `SAFE_DELETE_BULK_CONFIRM_REQUIRED` | `--downloader ffmpeg` |
+| 5 | 用 `COUNTIF(range,"*关键词*")` 通配符 | 跨引擎不一致，与专题 sheet 口径不符 | 明细加**显式枚举列**做精确 `COUNTIF` |
+| 6 | 用前缀匹配做 slug 黑名单 | 误伤 `2025-ai-innovation-challenge` | 精确匹配**完整 slug** |
+| 7 | 先打 AIGC 标再 recalc | 重算重新序列化，标识被抹 | 顺序固定：recalc → aigc_label |
+| 8 | shell 调 `reg.exe` 读注册表 | 本机安全策略拦截 `reg.exe` | Python `winreg`（脚本已内置） |
+| 9 | 只看退出码判断重算 | `errors_found` 退出码也是 0，会误判通过 | 只看 JSON `status` + `total_errors` |
+| 10 | 改 `extract_links()` 不做双向差集 | 静默漏抓或误抓 | 人工基线差集验收，两边都应为 0 |
+| 11 | 批量下载不降档 | 70 场 1080p ≈ 35GB + 逐个全片解码极慢 | `--height 720` + 先 `--limit 2` 试跑 |
 
-**必须传承载 iframe 的那个页面 URL**（`https://site.org/events/webinar/foo`），
-脚本会自动探测并补 `--referer`（站点根域名）。
+## 🩺 失败模式：症状 → 一线修复 → 兜底
 
-### 2. HLS 分片文件会触发批量删除钩子
+| 症状 | 一线修复 | 仍失败时 |
+|---|---|---|
+| `found 0 detail links` | 存下列表页 HTML，看真实 `<a href>` 形态，改 `extract_links()` | 该站是 SPA/JSON 接口 → 改用 API 抓取 |
+| 抓到的场次比基线少 | 查漏抓四因：a href 正配贪婪 / 日期容器层级 / slug 规则过宽 / 黑名单前缀误伤 | 加分页支持或改 API |
+| 抓到的场次比基线多 | 多为 hub 页，补进 `SKIP_SLUGS`（精确 slug） | 检查是否混入非 webinar 事件族 |
+| yt-dlp 报 403 | 起桥接（第 2 步）并 `--proxy http://127.0.0.1:39411` | 改 `--proxy socks5://127.0.0.1:7890` 直连给 yt-dlp |
+| yt-dlp 报 embed-only | 换成承载 iframe 的页面 URL | 该视频确实无公开页 → 记为「无公开录像」 |
+| `Requested format is not available` | `--list-formats` 看实际可用档 | 指定 `--fmt "<video-id>+<audio-id>"` |
+| 下载出 0 字节但退出码 0 | **查文件大小**，不只看 returncode | 换 `--height` 降档重试 |
+| 下载中断 / 反复重试 | 降档 `--height 720`；确认桥接进程还活着 | 桥接被回收则重启它 |
+| 视频没声音 | 选带音轨格式；`--audio-fmt` 补 audio-only 后合流 | 显式 `--fmt "video+audio"` |
+| `Error during demuxing: I/O error` | 以**全片解码**为准，不看文件大小 | 重下该场 |
+| recalc 返回 `error` 键（无 `status`） | 装 `formulas` 引擎；或去掉外部工作簿引用 | 提示用户手动装 LibreOffice |
+| recalc 返回 `external_link_cells` | 回 `build_index_xlsx.py` 去掉外部工作簿引用 | 不要用 `--force` 强刷 |
+| 演讲人 / 日期为空 | 该站 DOM 不同 → 按 `references/site-profiles.md` 改提取 | 手工补 manifest 字段 |
 
-yt-dlp 默认用 native HLS 下载器，产出**数百个 `.part-FragN` 文件**，收尾批量清理时可能触发
-安全钩子拦截（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`）导致中途失败。
-
-**解法**：`--downloader ffmpeg`（脚本已默认开启）→ 直接输出单个文件。
-
-### 3. ffmpeg 不支持 SOCKS5
-
-见第 2 步。yt-dlp 会警告 `ffmpeg does not support SOCKS proxies`。
-把 SOCKS5 端口包装成 HTTP 代理再喂给 ffmpeg。
-
-### 4. 代理协议不能混用
-
-本机常有两套代理：环境变量里的 `HTTP(S)_PROXY`（可能是白名单，挡视频站）
-和 Chrome 用的 `socks5://127.0.0.1:7890`（Clash，能通视频站）。
-
-**连 SOCKS5 端口必须用 socks5 协议**：`curl --socks5 127.0.0.1:7890`，
-写成 `curl -x http://127.0.0.1:7890` 会失败。yt-dlp 用 `--proxy socks5://127.0.0.1:7890`。
+完整排障见 `references/troubleshooting.md`。
 
 ## 脚本清单
 
-| 脚本 | 作用 |
-|---|---|
-| `scripts/probe_network.py` | 探测可用网络出口，自动发现 SOCKS5 端口 |
-| `scripts/harvest_events.py` | 抓列表 + 详情页 → manifest.json（多平台视频识别） |
-| `scripts/socks_bridge.py` | HTTP CONNECT → SOCKS5 隧道（ffmpeg 必需） |
-| `scripts/download_webinar.py` | 下载 + 合流 + 全片解码校验 |
-| `scripts/build_index_xlsx.py` | manifest.json → 多 sheet Excel 清单 |
+`probe_network.py`（探测出口）· `harvest_events.py`（抓列表→manifest）·
+`socks_bridge.py`（SOCKS5 桥）· `download_webinar.py`（下载/批量）·
+`build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）
 
-## 参考文档
-
-- `references/troubleshooting.md` —— 按「症状 → 原因 → 解法」组织的排障手册
-  （403 / 0 字节 / embed-only / 分片钩子 / 编码异常 / 漏抓误抓 / 表格公式）
-- `references/site-profiles.md` —— 各站点 DOM 画像与换站适配步骤
-  （CDISC 已完整验证；含「漏抓比误抓更危险」的自检方法）
-
-## 换站要点
-
-脚本针对 Drupal 风格活动站做过适配。换站时按 `site-profiles.md` 的四步走：
-改 `extract_links()` → 改日期提取 → 确认视频平台 → **用人工基线做双向差集验证**
-（漏抓和误抓都应为 0）。
-
-**漏抓比误抓更危险** —— 误抓只是多几行，漏抓会让清单静默不完整。
-
-## 交付前自检
-
-- [ ] `probe_network.py` 确认过路由
-- [ ] 视频文件大小 > 100KB 且 `ffprobe` 能读出时长
-- [ ] 全片解码零错误（`ffmpeg -v error -i out.mp4 -f null -`）
-- [ ] Excel 跑过 `recalc.py` 且 `total_errors=0`
-- [ ] Excel 写入 AIGC 标识（`aigc_label.py --platform WORKBUDDY`）
-- [ ] 用 `present_files` 交付视频 + 表格
+排障细节见 `references/troubleshooting.md`；站点 DOM 画像与换站适配四步见
+`references/site-profiles.md`。改过 `harvest_events.py` 后必跑 `test_date_parse.py`。

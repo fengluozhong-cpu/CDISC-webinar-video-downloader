@@ -116,6 +116,7 @@ def main():
     events = data.get("events") or data.get("rows") or []
     if not events:
         raise SystemExit("manifest contains no events")
+    kw = args.keyword or ""
 
     # match local downloads by id so the "downloaded" column stays truthful
     local = {}
@@ -135,7 +136,8 @@ def main():
     ws.title = "明细"
     heads = [("序号", 6), ("日期", 12), ("标题", 50), ("主题分类", 14), ("演讲人", 32),
              ("是否有录像", 10), ("视频平台", 10), ("视频ID", 12), ("视频链接", 42),
-             ("页面链接", 42), ("关联资料", 30), ("简介", 56), ("本地文件", 34), ("是否已下载", 10)]
+             ("页面链接", 42), ("关联资料", 30), ("简介", 56), ("本地文件", 34), ("是否已下载", 10),
+             ("关键词命中", 12)]
     for i, (n, w) in enumerate(heads, 1):
         c = ws.cell(row=1, column=i, value=n)
         c.font = Font(bold=True, color=XL_WHITE, size=10)
@@ -175,12 +177,21 @@ def main():
         ws.cell(row=row, column=12, value=r.get("description", "")).alignment = Alignment(vertical="top", wrap_text=True)
         ws.cell(row=row, column=13, value=lf).alignment = Alignment(vertical="top", wrap_text=True)
         ws.cell(row=row, column=14, value="是" if lf else "否").alignment = Alignment(horizontal="center")
-        for col in range(1, 15):
+        # Explicit keyword-match column: lets 汇总 use an EXACT COUNTIF instead of a
+        # wildcard, and keeps the 汇总 number identical to the 专题 sheet's filter
+        # (which matches on title + description).
+        kw_hit = ""
+        if kw:
+            hay = ((r.get("title") or "") + " " + (r.get("description") or "")).lower()
+            if kw.lower() in hay:
+                kw_hit = kw
+        ws.cell(row=row, column=15, value=kw_hit).alignment = Alignment(horizontal="center")
+        for col in range(1, 16):
             ws.cell(row=row, column=col).border = BOX
             if row % 2 == 0 and ws.cell(row=row, column=col).fill.start_color.rgb in (None, "00000000"):
                 ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=XL_NOTE)
     LAST = FIRST + len(rows) - 1
-    ws.auto_filter.ref = "A1:N%d" % LAST
+    ws.auto_filter.ref = "A1:O%d" % LAST
     ws.freeze_panes = "C2"
 
     # ------------------------------------------------------------ 汇总
@@ -206,7 +217,6 @@ def main():
         sm[c].fill = PatternFill("solid", fgColor=XL_PRIMARY)
         sm[c].alignment = Alignment(horizontal="center", vertical="center")
         sm[c].border = BOX
-    kw = args.keyword or ""
     for i, label in enumerate(kpis):
         r = 4 + i
         sm.cell(row=r, column=1, value=label).font = Font(bold=True, size=10)
@@ -220,11 +230,9 @@ def main():
     sm["B5"] = '=COUNTIF(明细!$F$%d:$F$%d,"是")' % (FIRST, LAST)
     sm["B6"] = '=COUNTIF(明细!$F$%d:$F$%d,"否")' % (FIRST, LAST)
     if kw:
-        # exact match on an explicit column -- a wildcard COUNTIF is unreliable
-        # across engines (and the专题 sheet filters on title+description, so a
-        # title-only wildcard would give a different number).
-        sm["B7"] = '=COUNTIF(明细!$D$%d:$D$%d,"*%s*")+COUNTIF(明细!$C$%d:$C$%d,"%s")' % (
-            FIRST, LAST, kw, FIRST, LAST, kw)
+        # EXACT match on the explicit 关键词命中 column (no wildcard).
+        # Same predicate as the 专题 sheet filter, so both numbers agree.
+        sm["B7"] = '=COUNTIF(明细!$O$%d:$O$%d,"%s")' % (FIRST, LAST, kw)
     else:
         sm["B7"] = "=0"
     sm["B8"] = '=COUNTIF(明细!$N$%d:$N$%d,"是")' % (FIRST, LAST)
