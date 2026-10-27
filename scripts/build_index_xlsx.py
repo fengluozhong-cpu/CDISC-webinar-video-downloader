@@ -220,7 +220,11 @@ def main():
     sm["B5"] = '=COUNTIF(明细!$F$%d:$F$%d,"是")' % (FIRST, LAST)
     sm["B6"] = '=COUNTIF(明细!$F$%d:$F$%d,"否")' % (FIRST, LAST)
     if kw:
-        sm["B7"] = '=COUNTIF(明细!$C$%d:$C$%d,"*%s*")' % (FIRST, LAST, kw)
+        # exact match on an explicit column -- a wildcard COUNTIF is unreliable
+        # across engines (and the专题 sheet filters on title+description, so a
+        # title-only wildcard would give a different number).
+        sm["B7"] = '=COUNTIF(明细!$D$%d:$D$%d,"*%s*")+COUNTIF(明细!$C$%d:$C$%d,"%s")' % (
+            FIRST, LAST, kw, FIRST, LAST, kw)
     else:
         sm["B7"] = "=0"
     sm["B8"] = '=COUNTIF(明细!$N$%d:$N$%d,"是")' % (FIRST, LAST)

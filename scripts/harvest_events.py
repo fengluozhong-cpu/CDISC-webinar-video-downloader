@@ -32,12 +32,18 @@ MONTHS = {m: i for i, m in enumerate(
      "August", "September", "October", "November", "December"], start=1)}
 
 
-def fetch(url, timeout=45, retries=2):
+def fetch(url, timeout=45, retries=2, proxy=None):
+    """GET a page. Uses the given proxy (e.g. the socks_bridge HTTP proxy)."""
     import urllib.request
     last = None
+    handlers = []
+    if proxy:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    else:
+        handlers.append(urllib.request.ProxyHandler({}))
+    opener = urllib.request.build_opener(*handlers)
     for attempt in range(retries + 1):
         try:
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             req = urllib.request.Request(url, headers={"User-Agent": UA})
             with opener.open(req, timeout=timeout) as r:
                 return r.read().decode("utf-8", "ignore")
@@ -216,12 +222,12 @@ def extract_description(raw):
     return ""
 
 
-def process(url, pages_dir, base):
+def process(url, pages_dir, base, proxy=None):
     slug = url.rstrip("/").split("/")[-1] or "index"
     path = os.path.join(pages_dir, slug + ".html")
     os.makedirs(pages_dir, exist_ok=True)
     if not (os.path.exists(path) and os.path.getsize(path) > 500):
-        raw = fetch(url)
+        raw = fetch(url, proxy=proxy)
         with open(path, "w", encoding="utf-8") as f:
             f.write(raw)
     else:
@@ -257,7 +263,8 @@ def process(url, pages_dir, base):
 
     vids = detect_videos(raw)
     desc = extract_description(raw)
-    iso, time_s = parse_date(date_txt)
+    # NOTE: do NOT re-parse date_txt here -- when the full-text fallback above
+    # was used, date_txt is empty and would wipe the date we just found.
 
     # a hub/category page has no date and no real description -> drop it
     if is_hub_page(title, slug, iso, vids, desc):
@@ -286,13 +293,16 @@ def main():
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--reuse", action="store_true", help="reuse cached detail pages")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--proxy", default=None,
+                    help="proxy for fetching (e.g. http://127.0.0.1:39411 bridge). "
+                         "Required when the site sits behind a blocked network.")
     args = ap.parse_args()
 
     base = args.base or (urllib.parse.urlparse(args.listing).scheme + "://" +
                          urllib.parse.urlparse(args.listing).netloc)
 
     print("fetching listing: %s" % args.listing)
-    listing = fetch(args.listing)
+    listing = fetch(args.listing, proxy=args.proxy)
     links = extract_links(listing, base)
     if args.limit:
         links = links[:args.limit]
@@ -305,7 +315,7 @@ def main():
     errors = []
     skipped = 0
     with cf.ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = {ex.submit(process, u, args.pages_dir, base): u for u in links}
+        futs = {ex.submit(process, u, args.pages_dir, base, args.proxy): u for u in links}
         for i, f in enumerate(cf.as_completed(futs), 1):
             u = futs[f]
             try:

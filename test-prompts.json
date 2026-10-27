@@ -1,0 +1,17 @@
+[
+ {
+  "id": 1,
+  "prompt": "帮我把 https://www.cdisc.org/events/webinars/public 上所有 webinar 的视频下载下来，再给我一份清单表格",
+  "expected": "先探测网络出口，再抓列表拿 manifest，起 SOCKS5 桥接，逐个下载并做解码校验，最后生成 4 sheet 的 Excel 清单并重算公式。关键是要知道 Vimeo 是 embed-only 必须传页面 URL，以及 ffmpeg 不支持 SOCKS5 要用桥接代理。"
+ },
+ {
+  "id": 2,
+  "prompt": "我直接跑 yt-dlp 下载 https://player.vimeo.com/video/1166067194 报错说 Cannot download embed-only video without embedding URL，怎么回事？怎么下？",
+  "expected": "识别出这是 embed-only 限制，解法是传承载 iframe 的页面 URL 而不是 player URL，并带上 --referer。同时要意识到 ffmpeg 场景下代理协议问题。"
+ },
+ {
+  "id": 3,
+  "prompt": "这个活动列表页 https://example.org/events 我抓下来发现只抓到 12 场，但同事说实际有 40 多场，漏了不少，怎么排查？",
+  "expected": "给出用人工基线做双向差集的方法（漏抓=基线有而没有，误抓=没有而基线有），并列举常见漏抓原因：a href 正则贪婪、日期容器取错层级导致空日期被当 hub 过滤、slug 过滤规则过宽、黑名单前缀误伤。重点强调漏抓比误抓危险。"
+ }
+]

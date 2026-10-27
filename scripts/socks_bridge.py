@@ -68,11 +68,18 @@ def socks_connect(dst_host, dst_port, socks_host, socks_port, timeout=30):
 
 
 def _pump(a, b):
+    """Relay bytes both ways.
+
+    The select() timeout is a *stall* detector, not a lifetime: an idle tunnel
+    (e.g. while ffmpeg is muxing) must NOT be torn down, otherwise long
+    downloads break on a 30s pause.  On timeout we keep waiting; only a real
+    EOF or error closes the tunnel.
+    """
     try:
         while True:
-            r, _, _ = select.select([a, b], [], [], 30)
+            r, _, _ = select.select([a, b], [], [], 300)
             if not r:
-                break
+                continue  # idle, not dead -- keep the tunnel open
             for s in r:
                 data = s.recv(65536)
                 if not data:

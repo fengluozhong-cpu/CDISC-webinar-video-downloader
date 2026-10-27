@@ -51,6 +51,9 @@ def win_registry_socks_ports():
     """Read ProxyServer from the Windows registry (Chrome usually uses SOCKS5 here).
 
     Uses winreg directly -- shelling out to reg.exe may be blocked by security policy.
+    Handles both forms:
+        socks5://127.0.0.1:7890        (single proxy, no '=' separator)
+        socks5=127.0.0.1:7890;http=... (per-protocol, '=' separated)
     """
     ports = []
     try:
@@ -65,11 +68,19 @@ def win_registry_socks_ports():
         return ports
     if not val:
         return ports
-    for part in str(val).split(";"):
+    val = str(val)
+    for part in val.split(";"):
+        part = part.strip()
+        if not part:
+            continue
         if "=" in part:
             _, _, p = part.partition("=")
-            if p.isdigit():
-                ports.append((int(p), str(val)))
+        else:
+            p = part
+        # strip scheme, keep the port: socks5://127.0.0.1:7890 -> 7890
+        m = re.search(r":(\d+)\s*$", p)
+        if m:
+            ports.append((int(m.group(1)), val))
     return ports
 
 

@@ -103,10 +103,14 @@ def ytdlp():
     return None
 
 
-def detect_page(url, timeout=30):
+def detect_page(url, timeout=30, proxy=None):
     """Fetch a page and report which video platform it embeds."""
     import urllib.request
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    else:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with opener.open(req, timeout=timeout) as r:
         html = r.read().decode("utf-8", "ignore")
@@ -301,10 +305,11 @@ def main():
 
     # what platform is on this page?
     try:
-        info = detect_page(args.url)
+        info = detect_page(args.url, proxy=args.proxy)
         print("page embeds: vimeo=%s youtube=%s" % (info["vimeo_id"], info["youtube_id"]))
     except Exception as e:  # noqa: BLE001
         print("page probe failed: %s" % e, file=sys.stderr)
+        info = {}
 
     fmts = list_formats(args.url, args.proxy, referer)
     if args.list_formats:
@@ -332,7 +337,7 @@ def main():
     download(args.url, args.out, args.proxy, referer, fmt=fmt)
     print("download finished in %.1f min" % ((time.time() - t0) / 60))
 
-    out = find_output(args.out)
+    out = find_output(args.out, video_id=info.get("vimeo_id") or info.get("youtube_id"))
     print("output: %s" % out)
     if not args.no_verify:
         ok, rep = verify(out)
