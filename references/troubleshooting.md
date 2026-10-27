@@ -221,7 +221,7 @@ python "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader/script
 
 **解法**：
 - 纯 Python 引擎缺失 → 提示用户手动 `pip install formulas`，或获授权后加 `--allow-install`
-- 出现 `external_link_cells` → 公式里混了外部工作簿引用，回 `build.py` 去掉
+- 出现 `external_link_cells` → 公式里混了外部工作簿引用，回 `scripts/build_index_xlsx.py` 去掉
 
 ### 症状：COUNTIF 统计出来的数字和预期不符
 

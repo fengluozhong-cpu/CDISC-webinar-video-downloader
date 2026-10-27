@@ -78,9 +78,7 @@ python "scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
   （列表页被挡时抓取阶段就会失败）。
 ### 第 3 步：下载
 
-**单个视频**：
-
-单个视频也写 `--report`（多次运行会**合并**进同一份 report）：
+**单个视频**（也写 `--report`，多次运行会**合并**进同一份 report）：
 
 ```bash
 cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
@@ -185,6 +183,7 @@ python "scripts/resolve_sheet_scripts.py" --shell
 `report_store.py`（report 合并的唯一实现）
 
 回归测试在 `tests/`（改脚本后必跑）：`test_date_parse.py` · `test_verify_report.py` ·
-`test_batch_isolation.py` · `test_report_store.py` · `test_judge_f/g/h_fixes.py`。
+`test_batch_isolation.py` · `test_report_store.py` · `test_cross_key_retry.py` ·
+`test_judge_*.py`。
 
 排障见 `references/troubleshooting.md`；换站见 `references/site-profiles.md`。
