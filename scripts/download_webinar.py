@@ -397,6 +397,8 @@ def batch_download(args):
             pick = choose_format(fmts, want_height=args.height)
             if not pick:
                 failed.append({"slug": slug, "error": "no suitable format"})
+                report[slug] = {"ok": False, "file": None,
+                                "report": {"error": "no suitable format"}}
                 print("   -> no suitable format, skipped")
                 continue
             _, fmt, h, has_audio = pick[0], pick[1], pick[2], pick[3]
@@ -431,17 +433,46 @@ def batch_download(args):
             # Catching only Exception would let one bad video abort the whole batch.
             failed.append({"slug": slug, "error": str(e)[:300] or repr(e)[:300]})
             report.setdefault(slug, {"ok": False, "file": None, "report": {"error": str(e)[:200]}})
+            # a partially downloaded file was never verified -- move it out of the
+            # delivery directory so it can never be shipped as if it were good
+            leftover = find_output(subdir)
+            if leftover:
+                q = _quarantine(leftover, args.out)
+                report[slug]["file"] = None
+                report[slug]["report"]["quarantined"] = q
+                print("   -> partial file quarantined to %s" % q)
             print("   -> FAILED: %s" % str(e)[:200])
     print("\nbatch done: ok=%d skipped=%d failed=%d" % (ok, skipped, len(failed)))
     if failed:
         for f in failed:
             print("  FAILED %s: %s" % (f["slug"], f["error"]))
     if args.report:
+        # MERGE with any existing report (a previous --limit run, or single-video
+        # runs) -- overwriting would silently drop entries the Excel step needs.
+        payload = {"ok": ok, "skipped": skipped, "failed": len(failed),
+                   "failures": list(failed), "videos": dict(report)}
+        if os.path.exists(args.report):
+            try:
+                with open(args.report, encoding="utf-8") as f:
+                    prev = json.load(f)
+                merged = dict(prev.get("videos") or {})
+                merged.update(payload["videos"])   # this run wins for its slugs
+                payload["videos"] = merged
+                pf = list(prev.get("failures") or [])
+                # drop stale failure entries for slugs this run fixed
+                cur = {f_.get("slug") for f_ in failed}
+                pf = [f_ for f_ in pf if f_.get("slug") not in cur or
+                      any(f_.get("slug") == s and f_ not in failed for s in cur)]
+                payload["failures"] = pf + [f_ for f_ in failed if f_ not in pf]
+                payload["ok"] = int(prev.get("ok") or 0) + ok
+                payload["skipped"] = int(prev.get("skipped") or 0) + skipped
+                payload["failed"] = len(payload["failures"])
+            except (OSError, ValueError):
+                pass
         with open(args.report, "w", encoding="utf-8") as f:
-            json.dump({"ok": ok, "skipped": skipped, "failed": len(failed),
-                       "failures": failed, "videos": report}, f,
-                      ensure_ascii=False, indent=1)
-        print("verification report written to %s" % args.report)
+            json.dump(payload, f, ensure_ascii=False, indent=1)
+        print("verification report written to %s (%d entries)"
+              % (args.report, len(payload["videos"])))
     return 0 if not failed else 1
 
 
@@ -467,6 +498,9 @@ def main():
     ap.add_argument("--report", default=None,
                     help="batch mode: write a JSON verification report here "
                          "(build_index_xlsx.py --report reads it to mark verified files)")
+    ap.add_argument("--slug", default=None,
+                    help="optional slug key for --report (matches the manifest slug; "
+                         "without it the video id is used)")
     args = ap.parse_args()
 
     if not ytdlp():
@@ -533,26 +567,31 @@ def main():
         # Key by SLUG when we know it (--manifest batch mode), else by video id.
         # build_index_xlsx.py looks up by slug first, then by video id.
         vkey = info.get("vimeo_id") or info.get("youtube_id") or os.path.basename(args.out)
-        skey = args.slug
+        skey = getattr(args, "slug", None) or vkey
         entry = {"ok": ok, "file": out, "report": rep}
         # MERGE into an existing report -- never clobber a batch run's results
         payload = {"ok": 1 if ok else 0, "skipped": 0, "failed": 0 if ok else 1,
-                   "failures": [] if ok else [{"slug": skey or vkey, "error": "verify failed"}],
+                   "failures": [] if ok else [{"slug": skey, "error": "verify failed"}],
                    "videos": {}}
         if os.path.exists(args.report):
             try:
                 with open(args.report, encoding="utf-8") as f:
                     prev = json.load(f)
                 payload["videos"].update(prev.get("videos") or {})
-                payload["failures"] = list(prev.get("failures") or []) + payload["failures"]
+                pf = list(prev.get("failures") or [])
+                # this run supersedes the previous outcome for these keys
+                for k in {skey, vkey}:
+                    pf = [x for x in pf if x.get("slug") != k]
+                payload["failures"] = pf + payload["failures"]
                 payload["ok"] = int(prev.get("ok") or 0) + payload["ok"]
                 payload["skipped"] = int(prev.get("skipped") or 0)
                 payload["failed"] = len(payload["failures"])
             except (OSError, ValueError):
                 pass
-        payload["videos"][skey or vkey] = entry
-        if skey and skey != vkey:
-            payload["videos"][vkey] = entry
+        # write under BOTH keys so a lookup by slug OR by video id finds it;
+        # a stale entry for either key is replaced (not allowed to shadow it)
+        for k in {skey, vkey}:
+            payload["videos"][k] = entry
         with open(args.report, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=1)
         print("verification report written to %s" % args.report)

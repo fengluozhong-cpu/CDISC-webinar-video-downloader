@@ -183,6 +183,6 @@ python "scripts/resolve_sheet_scripts.py" --shell
 `socks_bridge.py`（SOCKS5 桥）· `download_webinar.py`（下载/批量）·
 `build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）
 
-回归测试：`test_date_parse.py`（改 harvest 后）· `test_verify_report.py` ·
-`test_judge_f_fixes.py`。排障见 `references/troubleshooting.md`；
+回归测试（改脚本后必跑）：`test_date_parse.py` · `test_verify_report.py` ·
+`test_judge_f/g/h_fixes.py`。排障见 `references/troubleshooting.md`；
 换站适配见 `references/site-profiles.md`。

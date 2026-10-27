@@ -130,6 +130,7 @@ def main():
     # presence: files listed as failed are quarantined by the downloader and
     # must NOT be counted as downloaded.
     verified = {}
+    report_present = False
     if args.report:
         if not os.path.exists(args.report):
             # Silently falling back to "file exists == downloaded" would let an
@@ -141,6 +142,7 @@ def main():
                 % args.report)
         with open(args.report, encoding="utf-8") as f:
             rep = json.load(f)
+        report_present = True
         for slug, info in (rep.get("videos") or {}).items():
             verified[slug] = bool(info.get("ok"))
         print("read verification report: %d entries (%d failed)"
@@ -163,14 +165,16 @@ def main():
                             # When a report exists it is authoritative:
                             # a file is "downloaded" only if the report vouches for it.
                             # The report may key entries by slug or by video id.
-                            if verified:
+                            if report_present:
                                 ok = verified.get(slug)
                                 if ok is None:
                                     ok = verified.get(vid)
                                 if ok is None or not ok:
                                     continue
                             rel = os.path.relpath(os.path.join(root, fn), args.videos_dir)
-                            local[fn] = (v, rel)
+                            # key by (slug, path) -- two files with the same name in
+                            # different dirs are different files
+                            local[(slug, rel)] = (v, rel)
 
     wb = openpyxl.Workbook()
     wb.properties.title = args.title
@@ -197,7 +201,7 @@ def main():
         row = FIRST + idx
         vlink, vid = video_cell(r)
         plat = (r.get("videos") or [{}])[0].get("platform", "")
-        lf = next((rel for fn, (v, rel) in local.items() if v is r), "")
+        lf = next((rel for _k, (v, rel) in local.items() if v is r), "")
         ws.cell(row=row, column=1, value=idx + 1).alignment = Alignment(horizontal="center")
         dt = parse_dt(r.get("date"), r.get("time"))
         dc = ws.cell(row=row, column=2, value=dt)
@@ -372,7 +376,7 @@ def main():
         for idx, r in enumerate(sub):
             row = 3 + idx
             vlink, vid = video_cell(r)
-            lf = next((rel for fn, (v, rel) in local.items() if v is r), "")
+            lf = next((rel for _k, (v, rel) in local.items() if v is r), "")
             ss.cell(row=row, column=1, value=idx + 1).alignment = Alignment(horizontal="center")
             dt = parse_dt(r.get("date"), r.get("time"))
             dc = ss.cell(row=row, column=2, value=dt)
