@@ -130,7 +130,15 @@ def main():
     # presence: files listed as failed are quarantined by the downloader and
     # must NOT be counted as downloaded.
     verified = {}
-    if args.report and os.path.exists(args.report):
+    if args.report:
+        if not os.path.exists(args.report):
+            # Silently falling back to "file exists == downloaded" would let an
+            # unverified / broken file be counted as downloaded. Fail loudly.
+            raise SystemExit(
+                "ERROR: --report %s not found.\n"
+                "       Run download_webinar.py with the same --report path, or drop\n"
+                "       the flag only if you accept that unverified files count as downloaded."
+                % args.report)
         with open(args.report, encoding="utf-8") as f:
             rep = json.load(f)
         for slug, info in (rep.get("videos") or {}).items():
@@ -152,9 +160,13 @@ def main():
                     for vv in (v.get("videos") or []):
                         if vv.get("id") and str(vv["id"]) in fn:
                             slug = v.get("slug") or ""
-                            # if a report exists, trust it over mere file presence
-                            if slug in verified and not verified[slug]:
-                                continue
+                            # When a report exists it is authoritative:
+                            # a file is "downloaded" only if the report says it verified.
+                            if verified:
+                                if slug not in verified:
+                                    continue          # not covered by the report
+                                if not verified[slug]:
+                                    continue          # failed verification
                             rel = os.path.relpath(os.path.join(root, fn), args.videos_dir)
                             local[fn] = (v, rel)
 

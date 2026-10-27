@@ -217,6 +217,9 @@ def download(page_url, out_dir, proxy=None, referer=None, fmt=None,
     cmd += ["--downloader", "ffmpeg"]
     cmd += ["--merge-output-format", "mp4"]
     cmd += ["--concurrent-fragments", "1"]
+    # without this, yt-dlp sees an existing output file and skips it --
+    # a previously failed file would then fail verification again, forever.
+    cmd += ["--force-overwrites"]
 
     if fmt:
         cmd += ["-f", fmt]
@@ -373,11 +376,12 @@ def batch_download(args):
                     print("[%d/%d] SKIP %s (already downloaded)" % (i, len(targets), slug))
                     skipped += 1
                     continue
-                # failed verification -> quarantine it and re-download
+                # failed verification -> quarantine it and fall THROUGH to re-download
                 q = _quarantine(existing, args.out)
                 print("[%d/%d] %s exists but FAILED verification -> quarantined to %s, re-downloading"
                       % (i, len(targets), slug, q))
-                continue
+                report[slug] = {"ok": False, "file": None, "report": {"error": "previous file failed verification"}}
+                failed.append({"slug": slug, "error": "previous file failed verification; re-downloading"})
         print("[%d/%d] %s" % (i, len(targets), slug))
         referer = args.referer
         if not referer:
@@ -507,11 +511,26 @@ def main():
 
     out = find_output(args.out, video_id=info.get("vimeo_id") or info.get("youtube_id"))
     print("output: %s" % out)
+    ok = True
+    rep = {}
     if not args.no_verify:
         ok, rep = verify(out)
         print("verify: %s" % json.dumps(rep, ensure_ascii=False))
         if not ok:
-            raise SystemExit("verification FAILED")
+            # quarantine the bad file so it can never be counted as downloaded
+            q = _quarantine(out, args.out) if out else None
+            print("verification FAILED -> quarantined to %s" % q)
+    if args.report:
+        slug = (info.get("vimeo_id") or info.get("youtube_id")
+                or os.path.basename(args.out.rstrip("/\\")))
+        with open(args.report, "w", encoding="utf-8") as f:
+            json.dump({"ok": 1 if ok else 0, "skipped": 0, "failed": 0 if ok else 1,
+                       "failures": [] if ok else [{"slug": slug, "error": "verify failed"}],
+                       "videos": {slug: {"ok": ok, "file": out, "report": rep}}},
+                      f, ensure_ascii=False, indent=1)
+        print("verification report written to %s" % args.report)
+    if not ok:
+        raise SystemExit("verification FAILED")
     return 0
 
 

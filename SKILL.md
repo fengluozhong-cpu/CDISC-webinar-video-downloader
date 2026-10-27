@@ -11,13 +11,9 @@ agent_created: true
 ## 何时使用
 
 「下载 X 站点的 webinar 视频」「抓活动列表生成清单」「Vimeo 录像报 embed-only 错误」
-「批量下载某站点会议录像」「下载线上研讨会视频」——以及视频站被代理挡住（403 / 连不上）时。
+「批量下载某站点会议录像」——以及视频站被代理挡住（403 / 连不上）时。
 
-## 执行环境约定
-
-命令用**相对路径**调用，命令块首行已带 `cd` 到本 skill 目录
-（`C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader`）。
-
+命令块首行的 `cd` 已指向本 skill 目录，后面用相对路径调用。
 `recalc.py` / `aigc_label.py` 在带版本号的插件缓存目录，**不要硬编码**，
 用 `python "scripts/resolve_sheet_scripts.py" --shell` 取实际路径。
 
@@ -84,10 +80,12 @@ python "scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
 
 **单个视频**：
 
+单个视频也写 `--report`（校验结论同样落盘，第 4 步据此判定）：
+
 ```bash
 cd "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader" &&
 python "scripts/download_webinar.py" "https://site.org/events/webinar/foo" \
-  --proxy http://127.0.0.1:39411 --out videos
+  --proxy http://127.0.0.1:39411 --out videos --report verify_report.json
 ```
 
 **批量（manifest 全量）**：
@@ -163,7 +161,7 @@ python "scripts/resolve_sheet_scripts.py" --shell
 | 9 | 只看退出码判断重算 | `errors_found` 退出码也是 0，会误判通过 | 只看 JSON `status` + `total_errors` |
 | 10 | 改 `extract_links()` 不做双向差集 | 静默漏抓或误抓 | 人工基线差集验收，两边都应为 0 |
 | 11 | 批量下载不降档 | 70 场 1080p ≈ 35GB + 逐个解码极慢 | `--height 720` + 先 `--limit 2` 试跑 |
-| 12 | 只按「文件存在」判断已下载 | 坏文件会被算成已下载并交付 | 用 `--report` 贯通校验结论 |
+| 12 | 只按「文件存在」判断已下载 | 坏文件会被算成已下载并交付 | 必须用 `--report` 贯通校验结论；report 缺失时脚本会**报错退出**而非降级 |
 
 ## 🩺 失败模式：症状 → 一线修复 → 兜底
 
@@ -172,18 +170,18 @@ python "scripts/resolve_sheet_scripts.py" --shell
 | 症状 | 一线修复 | 仍失败时 |
 |---|---|---|
 | `found 0 detail links` | 看真实 `<a href>` 形态改 `extract_links()` | SPA/JSON 接口站 → 改用 API |
-| 抓到的场次比基线少 | 查漏抓四因：a href 正则贪婪 / 日期容器层级 / slug 规则过宽 / 黑名单前缀误伤 | 加分页或改 API |
+| 场次比基线少 | 查漏抓四因：a href 正则贪婪 / 日期层级 / slug 过宽 / 黑名单前缀误伤 | 加分页或改 API |
 | yt-dlp 报 403 | 起桥接（第 2 步）+ `--proxy http://127.0.0.1:39411` | 查 `probe_network.py` 的 ACTION 行 |
 | yt-dlp 报 embed-only | 换成承载 iframe 的页面 URL | 无公开页 → 记为「无公开录像」 |
-| 下载出 0 字节但退出码 0 | **查文件大小**，不只看 returncode | 降档重试 |
-| recalc 返回 `error` 键（无 `status`） | 装 `formulas` 引擎；或去掉外部引用 | 提示用户装 LibreOffice |
+| 0 字节但退出码 0 | **查文件大小**，不只看 returncode | 降档重试 |
+| recalc 返回 `error` 键 | 装 `formulas` 引擎；或去掉外部引用 | 提示用户装 LibreOffice |
 
 ## 脚本清单
 
 `probe_network.py`（探测出口）· `harvest_events.py`（抓列表→manifest）·
 `socks_bridge.py`（SOCKS5 桥）· `download_webinar.py`（下载/批量）·
-`build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）·
-`test_date_parse.py`（日期解析回归测试，改过 harvest 后必跑）
+`build_index_xlsx.py`（Excel）· `resolve_sheet_scripts.py`（解析 recalc/aigc 路径）
 
-排障见 `references/troubleshooting.md`；站点 DOM 画像与换站适配四步见
-`references/site-profiles.md`。
+回归测试：`test_date_parse.py`（改 harvest 后）· `test_verify_report.py` ·
+`test_judge_f_fixes.py`。排障见 `references/troubleshooting.md`；
+换站适配见 `references/site-profiles.md`。
