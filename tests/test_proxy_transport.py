@@ -87,6 +87,55 @@ def main():
     # --- cleanup on a missing directory must not raise
     check("cleanup on missing dir", dw.cleanup_fragments("/nonexistent/x"), [])
 
+    # --- urllib cannot speak socks5; detect_page must not use it there.
+    # A wrong proxy scheme makes urllib connect straight to the proxy port
+    # and get reset (WinError 10054), which used to abort the probe.
+    import urllib.request
+    real_build_opener = urllib.request.build_opener
+    calls = {"urllib": 0, "ytdlp": 0}
+
+    def fake_build_opener(*a, **kw):
+        calls["urllib"] += 1
+        return real_build_opener(*a, **kw)
+
+    real_ytdlp = dw._fetch_page_ytdlp
+    real_urllib = dw._fetch_page_urllib
+
+    def fake_urllib(url, timeout, proxy):
+        calls["urllib"] += 1
+        return "<html>123456</html>"
+
+    def fake_ytdlp(url, timeout, proxy):
+        calls["ytdlp"] += 1
+        return "Vimeo", "123456"
+
+    dw._fetch_page_urllib = fake_urllib
+    dw._fetch_page_ytdlp = fake_ytdlp
+    try:
+        r = dw.detect_page("http://x/y", timeout=5, proxy="socks5://127.0.0.1:7890")
+        check("socks5 probe uses yt-dlp", calls["ytdlp"], 1)
+        check("socks5 probe skips urllib", calls["urllib"], 0)
+        check("socks5 probe finds vimeo id", r["vimeo_id"], "123456")
+
+        calls["urllib"] = calls["ytdlp"] = 0
+        r = dw.detect_page("http://x/y", timeout=5, proxy="http://127.0.0.1:39411")
+        check("http probe uses urllib", calls["urllib"], 1)
+        check("http probe skips yt-dlp", calls["ytdlp"], 0)
+    finally:
+        dw._fetch_page_urllib = real_urllib
+        dw._fetch_page_ytdlp = real_ytdlp
+
+    # --- a failing probe must NOT raise (it is only advisory)
+    def boom(url, timeout, proxy):
+        raise OSError("probe exploded")
+
+    dw._fetch_page_ytdlp = boom
+    try:
+        r = dw.detect_page("http://x/y", timeout=5, proxy="socks5://127.0.0.1:7890")
+        check("failing probe returns empty", r["vimeo_id"], None)
+    finally:
+        dw._fetch_page_ytdlp = real_ytdlp
+
     if FAILURES:
         print("\nRESULT: FAIL (%d)" % len(FAILURES))
         for f in FAILURES:

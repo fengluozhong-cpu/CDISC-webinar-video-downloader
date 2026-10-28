@@ -112,8 +112,7 @@ def ytdlp():
     return None
 
 
-def detect_page(url, timeout=30, proxy=None):
-    """Fetch a page and report which video platform it embeds."""
+def _fetch_page_urllib(url, timeout, proxy):
     import urllib.request
     if proxy:
         opener = urllib.request.build_opener(
@@ -122,12 +121,60 @@ def detect_page(url, timeout=30, proxy=None):
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with opener.open(req, timeout=timeout) as r:
-        html = r.read().decode("utf-8", "ignore")
+        return r.read().decode("utf-8", "ignore")
+
+
+def _fetch_page_ytdlp(url, timeout, proxy):
+    """Resolve a page through yt-dlp, which can speak SOCKS5.
+
+    urllib has no SOCKS support at all: pointing ProxyHandler at a
+    socks5:// URL makes it connect straight to the proxy port and get
+    reset (WinError 10054).  yt-dlp bundles a SOCKS client, so it is the
+    only way to read a page through a socks5 proxy.
+
+    Returns (extractor_key, video_id) as yt-dlp reports them, e.g.
+    ("Vimeo", "1239924212").
+    """
+    cmd = ytdlp() + ["--no-warnings", "--skip-download",
+                     "--print", "ID:%(extractor_key)s|%(id)s"]
+    if proxy:
+        cmd += ["--proxy", proxy]
+    cmd += [url]
+    out, err = run(cmd, timeout=timeout)
+    text = (out or "") + (err or "")
+    m = re.search(r"^ID:([^|]*)\|(.+)$", text, re.M)
+    if not m:
+        return None, None
+    return m.group(1).strip(), m.group(2).strip()
+
+
+def detect_page(url, timeout=30, proxy=None):
+    """Report which video platform the page embeds.
+
+    Uses urllib for HTTP proxies and yt-dlp for socks5 (urllib cannot speak
+    socks5).  A failed probe is not fatal: the caller only uses it to learn
+    the video id, and yt-dlp resolves that itself when downloading.
+    """
+    is_socks = bool(proxy) and str(proxy).lower().startswith("socks")
+    html = ""
+    extractor = None
+    vid = None
+    try:
+        if is_socks:
+            extractor, vid = _fetch_page_ytdlp(url, timeout, proxy)
+        else:
+            html = _fetch_page_urllib(url, timeout, proxy)
+    except Exception as exc:  # noqa: BLE001 - probe failure must not abort
+        sys.stderr.write("page probe failed: %s\n" % exc)
+        html = ""
     vimeo = VIMEO_RE.search(html)
     yt = YOUTUBE_RE.search(html)
     return {
-        "vimeo_id": vimeo.group(1) if vimeo else None,
-        "youtube_id": yt.group(1) if yt else None,
+        "vimeo_id": (vimeo.group(1) if vimeo else None)
+                    or (vid if (extractor or "").lower() == "vimeo" else None),
+        "youtube_id": (yt.group(1) if yt else None)
+                      or (vid if (extractor or "").lower() == "youtube" else None),
+        "extractor": extractor,
         "html_len": len(html),
     }
 
