@@ -73,7 +73,7 @@ python "scripts/socks_bridge.py" --listen-port 39411 --socks-port 7890
 
 - 端口用**高位**（≥1024），低位在 Windows 上 PermissionError；该脚本**会阻塞**，用后台任务跑。
 - 验证：`curl -x http://127.0.0.1:39411 -o /dev/null -w "%{http_code}" https://vimeo.com/`
-- 桥接起好后，**回到第 1 步给 `harvest_events.py` 补上 `--proxy` 重跑**。
+- 桥接起好后，**回到第 1 步给 `harvest_events.py` 补上 `--proxy` 重跑**（它同样支持 socks5 与 http 两种）。
 
 ### 第 3 步：下载
 

@@ -62,6 +62,17 @@ python scripts/probe_network.py https://vimeo.com/ https://www.youtube.com/
 **怎么判断谁在抓流**：看脚本选的下载器——`--proxy` 是 `socks5://` 时选 native，
 是 `http://` 时选 ffmpeg。native 走分片、ffmpeg 走单文件，这是唯一的差别。
 
+> `harvest_events.py` 与 `download_webinar.py` 都接受 socks5 与 http 两种 `--proxy`，
+> 所以只有 SOCKS5 口时**整条链路都不需要桥接**。
+
+### 症状：`fetch failed: urlopen error [WinError 10054]`
+
+**原因**：给 urllib 传了 socks5 代理。urllib 的 `ProxyHandler` 只认 http/https，
+遇到 socks5:// 会直连代理端口然后被重置。
+
+**解法**：这是脚本的 bug 而非用法问题 —— 修好后 `--proxy socks5://...` 可直接用。
+若用的是旧版脚本，改用 `--proxy http://127.0.0.1:<bridge_port>` 绕开。
+
 ### 症状：改了 `HTTP_PROXY` 但某些站点反而挂了
 
 **原因**：白名单代理是按域名白名单放行的，改全局代理会连带影响别的任务。

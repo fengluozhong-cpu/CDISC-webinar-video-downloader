@@ -18,12 +18,16 @@ Usage
 import argparse
 import concurrent.futures as cf
 import html
+import http.client
 import json
 import os
 import re
 import sys
 import time
 import urllib.parse
+import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0 Safari/537.36"
 
@@ -32,12 +36,98 @@ MONTHS = {m: i for i, m in enumerate(
      "August", "September", "October", "November", "December"], start=1)}
 
 
+class _Socks5HTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that tunnels through a SOCKS5 proxy.
+
+    urllib's ProxyHandler only understands http:// proxies.  Pointing it at
+    a socks5:// URL makes urllib connect straight to the proxy port, which
+    then resets the connection (WinError 10054).
+
+    urllib's opener machinery cannot be told "use this connection class", so
+    this handler builds the tunnel by hand and hands the raw socket to
+    http.client.
+    """
+
+    def __init__(self, host, port=None, timeout=45, socks_host=None,
+                 socks_port=None, **kw):
+        http.client.HTTPSConnection.__init__(self, host, port=port,
+                                             timeout=timeout, **kw)
+        self._socks = (socks_host, socks_port)
+
+    def connect(self):
+        import socks_bridge
+        socks_host, socks_port = self._socks
+        raw = socks_bridge.socks_connect(self.host, self.port,
+                                         socks_host, socks_port,
+                                         timeout=self.timeout)
+        self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+
+
+class _Socks5ProxyHandler(urllib.request.BaseHandler):
+    """Route http/https requests through a SOCKS5 proxy."""
+
+    def __init__(self, socks_host, socks_port):
+        self.socks_host = socks_host
+        self.socks_port = socks_port
+
+    def _open(self, req, kind):
+        host = req.host
+        port = req.port or (443 if kind == "https" else 80)
+        if kind == "https":
+            conn = _Socks5HTTPSConnection(host, port, timeout=req.timeout,
+                                          socks_host=self.socks_host,
+                                          socks_port=self.socks_port)
+            conn.request("GET", req.selector,
+                         headers=dict(req.header_items()))
+            return conn.getresponse()
+        # plain http through the same tunnel
+        import socks_bridge
+        raw = socks_bridge.socks_connect(host, port, self.socks_host,
+                                         self.socks_port, timeout=req.timeout)
+        import http.client
+        conn = http.client.HTTPConnection(host, port, timeout=req.timeout)
+        conn.sock = raw
+        conn.request("GET", req.selector, headers=dict(req.header_items()))
+        return conn.getresponse()
+
+    https_open = _open
+    http_open = _open
+
+
+def _socks_endpoint(proxy):
+    """Parse socks5://host:port -> (host, port).  None if not socks5."""
+    if not proxy:
+        return None
+    text = str(proxy)
+    if not text.lower().startswith("socks"):
+        return None
+    rest = text.split("://", 1)[-1]
+    rest = rest.split("/", 1)[0]
+    if "@" in rest:
+        rest = rest.rsplit("@", 1)[-1]
+    host, _, port = rest.partition(":")
+    try:
+        return host or "127.0.0.1", int(port or 1080)
+    except ValueError:
+        return host or "127.0.0.1", 1080
+
+
 def fetch(url, timeout=45, retries=2, proxy=None):
-    """GET a page. Uses the given proxy (e.g. the socks_bridge HTTP proxy)."""
+    """GET a page through the given proxy.
+
+    Accepts an http:// proxy (the socks_bridge) or a socks5:// proxy (a
+    VPN client).  urllib cannot speak socks5, so that case is tunneled
+    by hand.
+    """
     import urllib.request
     last = None
     handlers = []
-    if proxy:
+    socks = _socks_endpoint(proxy)
+    if socks:
+        handlers.append(_Socks5ProxyHandler(*socks))
+        # urllib must not also apply a ProxyHandler for this request
+        handlers.append(urllib.request.ProxyHandler({}))
+    elif proxy:
         handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
     else:
         handlers.append(urllib.request.ProxyHandler({}))
