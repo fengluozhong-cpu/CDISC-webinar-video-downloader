@@ -136,6 +136,19 @@ def main():
     finally:
         dw._fetch_page_ytdlp = real_ytdlp
 
+    # --- the report key fallback must be derivable from the URL, not from
+    # the --out directory name (the directory is caller-chosen and never
+    # matches a manifest slug).
+    check("slug from url",
+          dw._slug_from_url("https://x.org/events/webinar/my-topic"),
+          "my-topic")
+    check("slug strips query",
+          dw._slug_from_url("https://x.org/events/webinar/foo?a=1#z"), "foo")
+    check("slug strips trailing slash",
+          dw._slug_from_url("https://x.org/events/webinar/foo/"), "foo")
+    check("slug lowercases",
+          dw._slug_from_url("https://x.org/events/webinar/Mixed-Case"), "mixed-case")
+
     if FAILURES:
         print("\nRESULT: FAIL (%d)" % len(FAILURES))
         for f in FAILURES:

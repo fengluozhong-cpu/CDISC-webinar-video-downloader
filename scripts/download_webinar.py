@@ -112,6 +112,20 @@ def ytdlp():
     return None
 
 
+def _slug_from_url(url):
+    """Derive a slug from a page URL: .../events/webinar/my-topic -> my-topic."""
+    try:
+        path = url.split("?", 1)[0].split("#", 1)[0].rstrip("/")
+        seg = path.rsplit("/", 1)[-1]
+        if not seg:
+            return None
+        # keep only URL-safe characters; a slug must match a manifest key
+        slug = re.sub(r"[^A-Za-z0-9._-]+", "-", seg).strip("-")
+        return slug.lower() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _fetch_page_urllib(url, timeout, proxy):
     import urllib.request
     if proxy:
@@ -693,7 +707,13 @@ def main():
     if args.report:
         # Key by SLUG when we know it (--manifest batch mode), else by video id.
         # build_index_xlsx.py looks up by slug first, then by video id.
-        vkey = info.get("vimeo_id") or info.get("youtube_id") or os.path.basename(args.out)
+        #
+        # The last fallback must be something the manifest can match.  The
+        # output DIRECTORY name is not: it is whatever the caller passed to
+        # --out, so the entry would never line up with a manifest slug.
+        # Derive a slug from the URL path instead.
+        vkey = (info.get("vimeo_id") or info.get("youtube_id")
+                or _slug_from_url(args.url))
         skey = getattr(args, "slug", None) or vkey
         entry = {"ok": ok, "file": out, "report": rep}
         # ONE key per video: writing both a slug and a video id made the
