@@ -60,16 +60,19 @@ def main():
           dw.pick_transport("socks5://127.0.0.1:7890",
                             "http://127.0.0.1:39411")[0], "native")
 
-    # --- cleanup_fragments must only remove .part-FragN files
+    # --- cleanup_fragments must only remove .part-FragN files.
+    # The suffix shape varies by yt-dlp build: both "X.part-Frag110" and
+    # "X.part-Frag110.part" occur in the wild.
     import tempfile
     import shutil
     tmp = tempfile.mkdtemp(prefix="fragtest_")
     try:
         keep = [
-            "video.mp4",              # final output
-            "video.mp4.part",        # partial container
-            "video.mp4.ytdl",        # resume state
-            "video.mp4.part-Frag12.part",   # a real fragment
+            "video.mp4",                    # final output
+            "video.mp4.part",                # partial container
+            "video.mp4.ytdl",                # resume state
+            "video.mp4.part-Frag12",         # fragment (build A)
+            "audio.mp4.part-Frag12.part",    # fragment (build B)
             "notes.txt",
         ]
         for name in keep:
@@ -77,8 +80,9 @@ def main():
                 f.write(b"x")
         removed = dw.cleanup_fragments(tmp)
         left = sorted(os.listdir(tmp))
-        check("frag removed count", len(removed), 1)
-        check("frag removed name", removed[0], "video.mp4.part-Frag12.part")
+        check("frag removed count", len(removed), 2)
+        check("frag removed names", sorted(removed),
+              ["audio.mp4.part-Frag12.part", "video.mp4.part-Frag12"])
         check("other files untouched", left,
               ["notes.txt", "video.mp4", "video.mp4.part", "video.mp4.ytdl"])
     finally:

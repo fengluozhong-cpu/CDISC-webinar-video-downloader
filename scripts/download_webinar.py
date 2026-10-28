@@ -459,22 +459,28 @@ def _quarantine(path, out_dir):
 
 
 def cleanup_fragments(out_dir):
-    """Remove leftover .part-FragN files from the native HLS downloader.
+    """Remove leftover HLS fragment files from the native downloader.
 
     yt-dlp's native downloader writes one file per HLS segment.  Hundreds of
     those can trip bulk-delete safety hooks, so they are cleared as soon as
     the real output exists.
 
-    Only *fragment* files are touched: the final media file, the .ytdl resume
-    file and any .part container are left alone.  Each file is removed
-    individually -- never a wildcard bulk delete -- so the safety hook stays
-    quiet and the count stays small.
+    The fragment suffix comes in two shapes depending on the yt-dlp build::
+
+        <name>.mp4.part-Frag110          (some builds)
+        <name>.mp4.part-Frag110.part     (others)
+
+    so both are matched.  Only *fragment* files are touched: the final media
+    file, the .ytdl resume file and the .part container are left alone.
+    Each file is removed individually -- never a wildcard bulk delete -- so
+    the safety hook stays quiet and the count stays small.
     """
     removed = []
     if not out_dir or not os.path.isdir(out_dir):
         return removed
+    pattern = re.compile(r"\.part-Frag\d+(\.part)?$")
     for name in sorted(os.listdir(out_dir)):
-        if not re.search(r"\.part-Frag\d+\.part$", name):
+        if not pattern.search(name):
             continue
         path = os.path.join(out_dir, name)
         try:
