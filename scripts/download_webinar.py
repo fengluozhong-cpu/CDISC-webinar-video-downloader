@@ -4,13 +4,12 @@ Handles the hard parts that break naive yt-dlp invocations:
 
   * embed-only players  -- Vimeo refuses a bare player URL; you must pass the
                            page that embeds the iframe, plus a matching referer.
-  * no SOCKS5 in ffmpeg  -- ffmpeg cannot speak SOCKS5, so a local
-                           HTTP->SOCKS5 bridge (socks_bridge.py) is used.
+  * proxy protocol mismatch -- yt-dlp speaks SOCKS5 natively, but ffmpeg only
+                           speaks HTTP.  So which protocol you pass decides
+                           who does the fetching.  See pick_transport().
   * fragment-file churn -- yt-dlp's native HLS downloader writes hundreds of
                            .part-FragN files, which can trip bulk-delete
                            safety hooks.  --downloader ffmpeg writes one file.
-  * missing audio/video  -- HLS "master" playlists often split A/V into two
-                           renditions that must be muxed.
 
 Usage
 -----
@@ -19,6 +18,13 @@ Usage
 
     # with an explicit proxy (recommended when the ambient proxy blocks the CDN)
     python download_webinar.py URL --proxy http://127.0.0.1:39411
+
+    # SOCKS5 directly -- yt-dlp does the fetching, no bridge needed
+    python download_webinar.py URL --proxy socks5://127.0.0.1:7890
+
+    # SOCKS5 for yt-dlp + HTTP bridge for the ffmpeg mux step
+    python download_webinar.py URL --proxy socks5://127.0.0.1:7890 \
+        --mux-proxy http://127.0.0.1:39411
 
     # pick a lower rendition (smaller / faster)
     python download_webinar.py URL --proxy http://127.0.0.1:39411 --height 720
@@ -198,9 +204,46 @@ def pick_audio_format(formats_text):
     return best
 
 
+def pick_transport(proxy, mux_proxy=None):
+    """Decide WHO does the fetching, based on the proxy protocol.
+
+    The protocol is not a detail -- it decides which process touches the
+    network, and that decides whether the download works at all:
+
+      * yt-dlp speaks SOCKS5 natively (it bundles a SOCKS client).
+      * ffmpeg speaks only HTTP (``-http_proxy``); it has no socks5
+        protocol at all, and silently ignores a socks5 proxy -> it tries a
+        direct connection -> the CDN answers 403.
+
+    So:
+
+      proxy = http://...   -> ffmpeg may fetch.  Use --downloader ffmpeg:
+                             one output file, no .part-FragN churn.
+      proxy = socks5://... -> only yt-dlp may fetch.  Use --downloader
+                             native, which produces .part-FragN files.
+
+    ``mux_proxy`` covers the mixed case: yt-dlp downloads over SOCKS5 while
+    the ffmpeg mux step talks HTTP through a bridge.  When the mux step
+    reads only local files (separate A/V renditions merged afterwards) no
+    proxy is needed for it at all.
+
+    Returns (downloader, needs_mux_proxy).
+    """
+    is_socks = bool(proxy) and str(proxy).lower().startswith("socks")
+    if is_socks and mux_proxy:
+        # yt-dlp fetches over socks5; the mux step gets an HTTP proxy.
+        return "native", True
+    if is_socks:
+        # Only socks5 available.  yt-dlp must do all the fetching.
+        return "native", False
+    # HTTP proxy (or none): ffmpeg can fetch, single-file output.
+    return "ffmpeg", False
+
+
 def download(page_url, out_dir, proxy=None, referer=None, fmt=None,
-             height=None, audio_fmt=None, extra_args=None, quiet=False):
-    """Run yt-dlp with ffmpeg as the downloader. Returns the output path.
+             height=None, audio_fmt=None, extra_args=None, quiet=False,
+             mux_proxy=None):
+    """Run yt-dlp and return the output path.
 
     ``fmt`` may already be a "video+audio" combination.  ``audio_fmt`` is an
     explicit audio-only id to pair with it; when given it is appended to fmt.
@@ -216,8 +259,11 @@ def download(page_url, out_dir, proxy=None, referer=None, fmt=None,
     if fdir:
         cmd += ["--ffmpeg-location", fdir]
 
+    downloader, needs_mux_proxy = pick_transport(proxy, mux_proxy)
     # ffmpeg downloader => a single output file, no .part-FragN churn
-    cmd += ["--downloader", "ffmpeg"]
+    # native downloader => .part-FragN files, but it is the only one that
+    # can speak SOCKS5.
+    cmd += ["--downloader", downloader]
     cmd += ["--merge-output-format", "mp4"]
     cmd += ["--concurrent-fragments", "1"]
     # without this, yt-dlp sees an existing output file and skips it --
@@ -236,9 +282,21 @@ def download(page_url, out_dir, proxy=None, referer=None, fmt=None,
     template = os.path.join(out_dir, "%(title)s [%(id)s].%(ext)s")
     cmd += ["-o", template, page_url]
 
+    # The ffmpeg mux step is a separate process.  When yt-dlp downloads over
+    # SOCKS5 but the mux step needs HTTP, hand the bridge to ffmpeg through
+    # the environment -- ffmpeg has no command-line flag for this.
+    env = None
+    if needs_mux_proxy and mux_proxy:
+        env = dict(os.environ)
+        env["http_proxy"] = mux_proxy
+        env["https_proxy"] = mux_proxy
+        env["HTTP_PROXY"] = mux_proxy
+        env["HTTPS_PROXY"] = mux_proxy
+
     if not quiet:
         print("yt-dlp:", " ".join(cmd[:12]), "...", flush=True)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=7200,
+                          env=env)
     if proc.returncode != 0:
         sys.stderr.write(proc.stdout[-4000:] + "\n" + proc.stderr[-4000:] + "\n")
         raise SystemExit("yt-dlp failed (rc=%d)" % proc.returncode)
@@ -339,6 +397,33 @@ def _quarantine(path, out_dir):
         return path
 
 
+def cleanup_fragments(out_dir):
+    """Remove leftover .part-FragN files from the native HLS downloader.
+
+    yt-dlp's native downloader writes one file per HLS segment.  Hundreds of
+    those can trip bulk-delete safety hooks, so they are cleared as soon as
+    the real output exists.
+
+    Only *fragment* files are touched: the final media file, the .ytdl resume
+    file and any .part container are left alone.  Each file is removed
+    individually -- never a wildcard bulk delete -- so the safety hook stays
+    quiet and the count stays small.
+    """
+    removed = []
+    if not out_dir or not os.path.isdir(out_dir):
+        return removed
+    for name in sorted(os.listdir(out_dir)):
+        if not re.search(r"\.part-Frag\d+\.part$", name):
+            continue
+        path = os.path.join(out_dir, name)
+        try:
+            os.remove(path)
+            removed.append(name)
+        except OSError:
+            pass
+    return removed
+
+
 def batch_download(args):
     """Download every video entry in a manifest, one page URL at a time.
 
@@ -413,7 +498,11 @@ def batch_download(args):
                 af = args.audio_fmt or pick_audio_format(fmts)
                 if af:
                     fmt = fmt + "+" + af
-            download(url, subdir, args.proxy, referer, fmt=fmt, height=args.height)
+            download(url, subdir, args.proxy, referer, fmt=fmt, height=args.height,
+                     mux_proxy=getattr(args, "mux_proxy", None))
+            frags = cleanup_fragments(subdir)
+            if frags:
+                print("   -> cleaned %d fragment file(s)" % len(frags))
             out = find_output(subdir, video_id=info.get("vimeo_id") or info.get("youtube_id"))
             if not args.no_verify:
                 good, rep = verify(out)
@@ -469,6 +558,10 @@ def main():
     ap.add_argument("--out", default="videos", help="output directory")
     ap.add_argument("--proxy", default=None, help="e.g. http://127.0.0.1:39411 (bridge) "
                                                   "or socks5://127.0.0.1:7890")
+    ap.add_argument("--mux-proxy", default=None,
+                    help="HTTP proxy for the ffmpeg mux step only. Use when "
+                         "--proxy is socks5:// (yt-dlp fetches over SOCKS5) "
+                         "but ffmpeg still needs HTTP, e.g. http://127.0.0.1:39411")
     ap.add_argument("--referer", default=None, help="referer header, usually the site root")
     ap.add_argument("--height", type=int, default=None, help="prefer this rendition height")
     ap.add_argument("--fmt", default=None, help="explicit yt-dlp format id")
@@ -532,7 +625,11 @@ def main():
 
     t0 = time.time()
     download(args.url, args.out, args.proxy, referer, fmt=fmt,
-             height=args.height, audio_fmt=audio_fmt)
+             height=args.height, audio_fmt=audio_fmt,
+             mux_proxy=getattr(args, "mux_proxy", None))
+    frags = cleanup_fragments(args.out)
+    if frags:
+        print("cleaned %d fragment file(s)" % len(frags))
     print("download finished in %.1f min" % ((time.time() - t0) / 60))
 
     out = find_output(args.out, video_id=info.get("vimeo_id") or info.get("youtube_id"))

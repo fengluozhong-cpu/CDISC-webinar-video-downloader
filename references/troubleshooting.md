@@ -35,13 +35,32 @@ python scripts/probe_network.py https://vimeo.com/ https://www.youtube.com/
 ### 症状：yt-dlp 警告 `ffmpeg does not support SOCKS proxies` 并报 403
 
 **原因**：ffmpeg 只会说 HTTP 代理，不会说 SOCKS5。它悄悄直连了 → 目标站拒绝。
+**但 yt-dlp 本身会说 SOCKS5** —— 所以关键不是「换协议」，而是**让会 socks5 的进程去抓流**。
 
-**解法**：起 `socks_bridge.py`，把 SOCKS5 包装成 HTTP 代理：
-```bash
-python scripts/socks_bridge.py --listen-port 39411 --socks-port 7890
-# 之后
-python scripts/download_webinar.py URL --proxy http://127.0.0.1:39411
-```
+**解法（按优先级）**：
+
+1. **直接给 yt-dlp  socks5**（最简单，无需桥接）。脚本会自动改用 native 下载器：
+   ```bash
+   python scripts/download_webinar.py URL --proxy socks5://127.0.0.1:7890
+   ```
+   代价：native 下载器会产生 `.part-FragN` 分片，脚本下载后会自动逐个清理。
+
+2. **ffmpeg 合流那步也要联网时**（例如 `--download-sections` 让 ffmpeg 去拉流），
+   给合流单独一个 HTTP 出口：
+   ```bash
+   python scripts/download_webinar.py URL \
+     --proxy socks5://127.0.0.1:7890 --mux-proxy http://127.0.0.1:39411
+   ```
+   `socks_bridge.py` 仍需起好提供那个 HTTP 口。
+
+3. **只有 ffmpeg 抓流时**（走 HTTP 代理），用桥接：
+   ```bash
+   python scripts/socks_bridge.py --listen-port 39411 --socks-port 7890
+   python scripts/download_webinar.py URL --proxy http://127.0.0.1:39411
+   ```
+
+**怎么判断谁在抓流**：看脚本选的下载器——`--proxy` 是 `socks5://` 时选 native，
+是 `http://` 时选 ffmpeg。native 走分片、ffmpeg 走单文件，这是唯一的差别。
 
 ### 症状：改了 `HTTP_PROXY` 但某些站点反而挂了
 
@@ -109,7 +128,8 @@ python scripts/download_webinar.py URL --list-formats
 **解法**：
 - 降低并发：`--concurrent-fragments 1`（脚本默认）
 - 换低清晰度：`--height 720`
-- 用 HTTP 桥接而非直连 socks5（桥接有重试与缓冲）
+- 两条路都试：socks5 直连（`--proxy socks5://...`）与 HTTP 桥接（`--proxy http://...`），
+  哪条稳用哪条 —— 协议不是限制，是选择。
 
 ### 症状：ffmpeg 报 `Error during demuxing: I/O error` 但文件看着正常
 

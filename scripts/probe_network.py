@@ -207,13 +207,31 @@ def main():
             for k, v in entry["routes"].items())
         for entry in report["targets"])
     if blocked_by_ambient and socks_works:
+        # Which SOCKS5 port actually worked?  Report it by name so the
+        # caller can use it verbatim.
+        socks_port = None
+        for entry in report["targets"]:
+            for k, v in entry["routes"].items():
+                if k.startswith("socks5_") and v.get("code") and v["code"] < 400:
+                    socks_port = k.split("_", 1)[1]
+                    break
+            if socks_port:
+                break
         print("=> ACTION: ambient proxy blocks the target but SOCKS5 works.")
-        print("   1) start scripts/socks_bridge.py (HTTP->SOCKS5 bridge)")
-        print("   2) give ffmpeg/yt-dlp --proxy http://127.0.0.1:<bridge_port>")
+        if socks_port:
+            print("   1) simplest: --proxy socks5://127.0.0.1:%s" % socks_port)
+            print("      (yt-dlp speaks SOCKS5 natively; the script then uses the")
+            print("       native downloader and cleans up .part-FragN files)")
+            print("   2) if ffmpeg must fetch too (e.g. --download-sections),")
+            print("      start scripts/socks_bridge.py and add")
+            print("      --mux-proxy http://127.0.0.1:<bridge_port>")
+        else:
+            print("   1) start scripts/socks_bridge.py (HTTP->SOCKS5 bridge)")
+            print("   2) give ffmpeg/yt-dlp --proxy http://127.0.0.1:<bridge_port>")
     elif blocked_by_ambient:
         print("=> ACTION: no working route found. Check Clash/VPN is running, or use a mirror.")
     else:
-        print("=> ACTION: ambient proxy is sufficient; no bridge needed.")
+        print("=> ACTION: ambient proxy is sufficient; no proxy needed.")
     return 0
 
 
