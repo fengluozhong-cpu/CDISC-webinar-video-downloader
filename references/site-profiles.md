@@ -19,7 +19,46 @@
   （**注意**：日期在 span 文本里，不在 div 文本里；早期版本按 div 取会拿到空值）
 - 演讲人：`<strong>Presenters</strong><br><ul><li>Name</li>...</ul>`
 - 附件：`/sites/default/files/pdf/*.pdf`
-- Members Only 页面**没有** `field-webinar-recording` 字段 → 判定为「无公开录像」
+- ⚠️ **改判（2026-10 实证）**：详情页出现 `webinar-restricted-message`（文案「Members Only Webinar -
+  Become a Member to Register」）且**没有** `field-webinar-recording` 字段时，**不等于无公开录像**。
+  列表页 `/events/webinars/public` 为每场渲染缩略图 iframe，`player.vimeo.com/video/<id>` **对匿名用户全量可见**。
+  旧结论「Members Only → 无公开录像」是错的，照着文案判断会漏掉整场。
+  → 判定顺序：先 `has_video`（manifest 字段），再 `video_source`，**永远不要用页面文案判断门禁**。
+
+### CDISC「列表页独有」录像（详情页门禁）审计
+
+```bash
+# 1) 从列表页回填缺失的 vimeo_id
+cd "C:/Users/Administrator/.workbuddy/skills/CDISC-webinar-video-downloader" &&
+python "scripts/harvest_listing_embeds.py" \
+  --listing "https://www.cdisc.org/events/webinars/public" \
+  --manifest "E:/CDISC/Webinars/index.json" --dry-run
+
+# 2) 给每条打 detail_page_embed / video_source 标
+#    判定 = pages/events/webinar/<slug> 缓存里有没有 player.vimeo.com/video/<id>
+#    72 条 detail / 1 条 listing（member-webinar-new-sdtmig-v4-0-content-requested-fda，
+#    vimeo 1191662752，2026-05-12）—— 截至 2026-10-28 的实测基线
+```
+
+已知同类型条目（下次可直接照抄下载方式）：
+
+| slug | 日期 | Vimeo ID | 备注 |
+|---|---|---|---|
+| `member-webinar-new-sdtmig-v4-0-content-requested-fda` | 2026-05-12 | 1191662752 | 详情页全文只有门禁提示 + "Members Only Files"，无任何 iframe；录像只在列表页 |
+
+下载这类条目**不要**把详情页 URL 交给 `download_webinar.py`（它按页面找 iframe，会报 `无视频`）；
+直接把列表页当承载页，用 playlist 定位：
+
+```bash
+# 列表页是 74 个 embed 的 playlist，先定位序号再取
+python -m yt_dlp --proxy http://127.0.0.1:39411 \
+  --downloader ffmpeg -f "bv[height<=720]+ba" --merge-output-format mp4 \
+  -o "videos/<Name>_[<vid>].%(ext)s" \
+  "https://player.vimeo.com/video/<vid>?autoplay=0#__youtubedl_smuggle=%7B%22referer%22%3A+%22https%3A%2F%2Fwww.cdisc.org%2Fevents%2Fwebinars%2Fpublic%22%7D"
+```
+
+> `#__youtubedl_smuggle={"referer":...}` 是绕过 Vimeo `embed-only` 的关键：直接传 player URL 必失败，
+> 传列表页 URL 又会被解析成 74 条 playlist。smuggle 片段 = 只取一个视频 + 带正确 referer。
 
 ### CDISC 特殊过滤规则
 

@@ -136,6 +136,143 @@ def http_probe(url, proxy=None, timeout=20):
         return 0, str(e)[:120]
 
 
+def _ambient_proxy():
+    """Ambient HTTP(S) proxy from the environment, scheme-normalized."""
+    val = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+           or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy") or "")
+    if val and "://" not in val:
+        val = "http://" + val
+    return val
+
+
+def _socks_candidates():
+    """SOCKS5 candidate ports: registry + netstat listeners + well-known ports."""
+    ports = set(p for p, _v in win_registry_socks_ports())
+    listening = listening_ports()
+    ports.update(p for p in CANDIDATE_PORTS if p in listening)
+    return ports
+
+
+def _curl_code_via_socks(port, url, timeout=30):
+    cmd = ["curl", "-s", "--max-time", "20", "--socks5", "127.0.0.1:%d" % port,
+           "-o", os.devnull, "-w", "%{http_code}", url]
+    out = _run_text(cmd, timeout=timeout).strip()
+    return int(out) if out.isdigit() else 0
+
+
+def _socks_reachable(urls, port):
+    """True when this SOCKS5 port reaches EVERY target URL."""
+    for url in urls:
+        code = _curl_code_via_socks(port, url)
+        if not code or code >= 400:
+            return False
+    return True
+
+
+def _decide(ambient, ambient_all_ok, socks_working):
+    """Shared route decision.  Returns (proxy_or_None, mode)."""
+    if ambient_all_ok:
+        return (ambient or None, "ambient" if ambient else "direct")
+    if socks_working:
+        return ("socks5://127.0.0.1:%d" % socks_working[0], "socks5")
+    return (None, "blocked")
+
+
+def resolve_auto_proxy(urls, timeout=20):
+    """Probe every egress route for the given URLs and pick a --proxy value.
+
+    Returns (proxy_or_None, mode, detail).  Modes:
+      direct   -- no ambient proxy set; the target is reachable bare
+      ambient  -- the ambient HTTP(S)_PROXY reaches it.  Returned explicitly
+                  because urllib-based callers build ProxyHandler({}) (which
+                  DISABLES env proxies) and must pass it; yt-dlp/ffmpeg take
+                  an explicit http:// proxy just as well.
+      socks5   -- ambient blocked, but a local SOCKS5 reaches every target
+      blocked  -- nothing works; detail explains what failed
+    """
+    ambient = _ambient_proxy()
+    ambient_all_ok = True
+    for url in urls:
+        code, _err = http_probe(url, proxy=ambient or None, timeout=timeout)
+        if not code or code >= 400:
+            ambient_all_ok = False
+            break
+    if ambient_all_ok:
+        proxy, mode = _decide(ambient, True, None)
+        return (proxy, mode, "")
+    socks_working = []
+    for port in sorted(_socks_candidates()):
+        if probe_socks(port) and _socks_reachable(urls, port):
+            socks_working.append(port)
+    proxy, mode = _decide(ambient, False, socks_working)
+    if mode == "blocked":
+        return (None, "blocked",
+                "ambient route %s failed and no working local SOCKS5 found"
+                % (ambient or "(none set)"))
+    return (proxy, mode, "")
+
+
+def _fetch_text(url, proxy, timeout=20):
+    """GET a page body as text (up to 2 MB) through the given proxy or bare."""
+    handlers = [urllib.request.ProxyHandler(
+        {"http": proxy, "https": proxy} if proxy else {})]
+    opener = urllib.request.build_opener(*handlers)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with opener.open(req, timeout=timeout) as r:
+            return r.read(2_000_000).decode("utf-8", "ignore")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def classify_platform_urls(page_url, timeout=20):
+    """Fetch the page over the ambient route (or bare) and return probe URLs
+    for every video platform its iframes reference.
+
+    Rationale: the page origin and the video CDN often have DIFFERENT
+    reachability (e.g. cdisc.org reachable via a whitelist proxy that blocks
+    player.vimeo.com).  Choosing a route for the page alone would break the
+    actual video download, so auto-routing must probe the platform domains
+    too.  An empty body (page unfetchable) yields [] and the caller just
+    probes the page URL itself.
+    """
+    ambient = _ambient_proxy()
+    body = _fetch_text(page_url, ambient or None, timeout)
+    probes = []
+    if not body:
+        return probes
+    if "player.vimeo.com" in body or "vimeo.com/video" in body:
+        probes += ["https://player.vimeo.com/", "https://vimeo.com/"]
+    if "youtube.com/embed" in body or "youtube-nocookie" in body or "youtu.be/" in body:
+        probes += ["https://www.youtube.com/"]
+    if "wistia" in body:
+        probes += ["https://fast.wistia.com/"]
+    return probes
+
+
+def auto_proxy_arg(urls, timeout=20):
+    """Resolve `--proxy auto`: probe, print the choice, exit with diagnosis
+    when nothing works.  Returns the value to hand to the caller's --proxy
+    (None means "no explicit proxy needed")."""
+    proxy, mode, detail = resolve_auto_proxy(urls, timeout=timeout)
+    if mode == "direct":
+        print("auto proxy: reachable directly, no proxy needed")
+    elif mode == "ambient":
+        print("auto proxy: ambient proxy works -> %s" % proxy)
+    elif mode == "socks5":
+        print("auto proxy: ambient blocked, SOCKS5 works -> %s" % proxy)
+    else:
+        raise SystemExit(
+            "auto proxy: no working route to %s (%s)\n"
+            "  NOTE: if only the video CDN is blocked, the page may still be "
+            "fetchable -- the download needs a route that reaches BOTH.\n"
+            "  1) start your VPN / Clash (SOCKS5 listener)\n"
+            "  2) or export HTTPS_PROXY to a working HTTP proxy\n"
+            "  3) or run scripts/probe_network.py <url> for a full diagnosis"
+            % (", ".join(urls), detail))
+    return proxy
+
+
 def main():
     ap = argparse.ArgumentParser(description="Probe network egress for a target host")
     ap.add_argument("urls", nargs="+", help="URLs to test")
@@ -158,10 +295,7 @@ def main():
     if args.socks_port:
         socks_candidates.add(args.socks_port)
     if not args.ambient_only:
-        for p in listening_ports():
-            if p in CANDIDATE_PORTS:
-                socks_candidates.add(p)
-        socks_candidates.update(p for p in CANDIDATE_PORTS if p in listening_ports())
+        socks_candidates.update(_socks_candidates())
 
     for port in sorted(socks_candidates):
         if probe_socks(port):
@@ -175,11 +309,25 @@ def main():
         entry["routes"]["ambient_http_proxy"] = {"code": code, "error": err}
         for port in report["socks_ports"]:
             # curl supports socks5; urllib does not, so shell out
-            cmd = ["curl", "-s", "--max-time", "20", "--socks5", "127.0.0.1:%d" % port,
-                   "-o", os.devnull, "-w", "%{http_code}", url]
-            out = _run_text(cmd, timeout=30).strip()
-            entry["routes"]["socks5_%d" % port] = {"code": int(out) if out.isdigit() else 0}
+            code = _curl_code_via_socks(port, url)
+            entry["routes"]["socks5_%d" % port] = {"code": code}
         report["targets"].append(entry)
+
+    # machine-readable recommendation (--json), consistent with resolve_auto_proxy
+    def _code_ok(v):
+        c = v.get("code", 0) if isinstance(v, dict) else 0
+        return bool(c) and c < 400
+
+    ambient_all_ok = all(
+        _code_ok(entry["routes"].get("ambient_http_proxy", {}))
+        for entry in report["targets"])
+    socks_working = [port for port in report["socks_ports"]
+                     if all(_code_ok(entry["routes"].get("socks5_%d" % port, {}))
+                            for entry in report["targets"])]
+    rec_proxy, rec_mode = _decide(ambient, ambient_all_ok, socks_working)
+    report["recommendation"] = {"proxy": rec_proxy, "mode": rec_mode}
+    if rec_mode == "blocked":
+        report["recommendation"]["detail"] = "no route reaches every target"
 
     if args.json:
         print(json.dumps(report, indent=1, ensure_ascii=False))
@@ -232,6 +380,15 @@ def main():
         print("=> ACTION: no working route found. Check Clash/VPN is running, or use a mirror.")
     else:
         print("=> ACTION: ambient proxy is sufficient; no proxy needed.")
+
+    if rec_mode == "direct":
+        print("=> AUTO: no explicit proxy needed (direct)")
+    elif rec_mode == "ambient":
+        print("=> AUTO: --proxy %s   # ambient proxy, pass explicitly" % rec_proxy)
+    elif rec_mode == "socks5":
+        print("=> AUTO: --proxy %s" % rec_proxy)
+    else:
+        print("=> AUTO: no working route; --proxy auto will exit with a diagnosis")
     return 0
 
 

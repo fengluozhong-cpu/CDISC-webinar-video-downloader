@@ -79,6 +79,20 @@ python scripts/probe_network.py https://vimeo.com/ https://www.youtube.com/
 
 **解法**：**不要改全局环境变量**。用命令级 `--proxy` 只给单次下载指定出口。
 
+### 症状：yt-dlp 报 `Sign in to confirm you're not a bot`（YouTube）
+
+**原因**：YouTube 对数据中心 IP / 无 cookie 请求的反爬。默认、`web_embedded`、
+`tv_embedded` 三种 player client 均会拦截（2026-10 实测）。
+
+**解法**：
+1. **带 cookie**：`--cookies-from-browser chrome`（或 edge / firefox）。
+   Windows 下 Chrome / Edge **正在运行时 cookie 库被锁**，会报
+   `Could not copy Chrome cookie database`（yt-dlp#7271）—— 先完全退出浏览器。
+2. **JS runtime**：新版 yt-dlp 还需要 deno（`No supported JavaScript runtime
+   could be found` 警告 = 缺省会少格式）。
+3. **网络出口**：`--proxy auto` 会把 `https://www.youtube.com/` 一并纳入探测。
+4. 这不是脚本 bug：CDISC / Vimeo 场景无需以上任何一步，开箱即用。
+
 ---
 
 ## 下载层
@@ -240,7 +254,7 @@ with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
 
 **解法**：跑重算脚本（路径随版本变，用解析脚本取，别硬编码）：
 ```bash
-python "C:/Users/Administrator/.workbuddy/skills/webinar-video-downloader/scripts/resolve_sheet_scripts.py" --shell
+python "C:/Users/Administrator/.workbuddy/skills/CDISC-webinar-video-downloader/scripts/resolve_sheet_scripts.py" --shell
 # 输出可直接执行的两条命令（recalc + aigc_label，自动选最新版本）
 ```
 判定只看 JSON 的 `status` 与 `total_errors`，**不要看退出码**。

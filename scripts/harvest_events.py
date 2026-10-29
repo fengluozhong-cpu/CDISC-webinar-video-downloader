@@ -28,6 +28,9 @@ import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import probe_network
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0 Safari/537.36"
 
@@ -384,9 +387,14 @@ def main():
     ap.add_argument("--reuse", action="store_true", help="reuse cached detail pages")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--proxy", default=None,
-                    help="proxy for fetching (e.g. http://127.0.0.1:39411 bridge). "
-                         "Required when the site sits behind a blocked network.")
+                    help="proxy for fetching: 'auto' = probe the network and pick "
+                         "the right transport; or http://127.0.0.1:39411 (bridge) "
+                         "or socks5://127.0.0.1:7890.  Required when the site sits "
+                         "behind a blocked network.")
     args = ap.parse_args()
+
+    if args.proxy == "auto":
+        args.proxy = probe_network.auto_proxy_arg([args.listing])
 
     base = args.base or (urllib.parse.urlparse(args.listing).scheme + "://" +
                          urllib.parse.urlparse(args.listing).netloc)

@@ -16,6 +16,9 @@ Usage
     # one page
     python download_webinar.py "https://site.org/events/webinar/foo"
 
+    # auto: probe direct / ambient HTTP proxy / local SOCKS5 and pick
+    python download_webinar.py URL --proxy auto
+
     # with an explicit proxy (recommended when the ambient proxy blocks the CDN)
     python download_webinar.py URL --proxy http://127.0.0.1:39411
 
@@ -43,6 +46,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import report_store
+import probe_network
 
 VIMEO_RE = re.compile(r"player\.vimeo\.com/video/(\d+)")
 YOUTUBE_RE = re.compile(r"(?:youtube\.com/(?:embed|watch\?v=)|youtu\.be/)([A-Za-z0-9_-]{6,})")
@@ -623,7 +627,9 @@ def main():
                     help="manifest.json from harvest_events.py -- download every entry "
                          "that has a video (batch mode)")
     ap.add_argument("--out", default="videos", help="output directory")
-    ap.add_argument("--proxy", default=None, help="e.g. http://127.0.0.1:39411 (bridge) "
+    ap.add_argument("--proxy", default=None, help="'auto' = probe the network and pick "
+                                                  "the right transport; or an explicit "
+                                                  "http://127.0.0.1:39411 (bridge) "
                                                   "or socks5://127.0.0.1:7890")
     ap.add_argument("--mux-proxy", default=None,
                     help="HTTP proxy for the ffmpeg mux step only. Use when "
@@ -650,6 +656,26 @@ def main():
         raise SystemExit("yt-dlp not found. Install: pip install yt-dlp")
     if not args.url and not args.manifest:
         raise SystemExit("provide a page URL or --manifest manifest.json")
+
+    if args.proxy == "auto":
+        # probe the egress for THIS target and pick the transport automatically.
+        # The page origin and the video CDN may have different reachability
+        # (e.g. cdisc.org via a whitelist proxy that blocks player.vimeo.com),
+        # so the platform domains embedded in the page are probed as well.
+        if args.url:
+            target = args.url
+        else:
+            with open(args.manifest, encoding="utf-8") as f:
+                data = json.load(f)
+            target = data.get("listing")
+            if not target:
+                events = data.get("events") or data.get("rows") or []
+                target = events[0].get("url") if events else None
+            if not target:
+                raise SystemExit("--proxy auto: manifest lacks a 'listing' key; "
+                                 "pass a page URL or an explicit --proxy")
+        targets = [target] + probe_network.classify_platform_urls(target)
+        args.proxy = probe_network.auto_proxy_arg(targets)
 
     if args.manifest:
         return batch_download(args)

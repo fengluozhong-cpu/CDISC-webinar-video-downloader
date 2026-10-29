@@ -188,7 +188,7 @@ def main():
     heads = [("序号", 6), ("日期", 12), ("标题", 50), ("主题分类", 14), ("演讲人", 32),
              ("是否有录像", 10), ("视频平台", 10), ("视频ID", 12), ("视频链接", 42),
              ("页面链接", 42), ("关联资料", 30), ("简介", 56), ("本地文件", 34), ("是否已下载", 10),
-             ("关键词命中", 12)]
+             ("关键词命中", 12), ("视频取源", 16)]
     for i, (n, w) in enumerate(heads, 1):
         c = ws.cell(row=1, column=i, value=n)
         c.font = Font(bold=True, color=XL_WHITE, size=10)
@@ -237,12 +237,17 @@ def main():
             if kw.lower() in hay:
                 kw_hit = kw
         ws.cell(row=row, column=15, value=kw_hit).alignment = Alignment(horizontal="center")
-        for col in range(1, 16):
+        # 视频取源：detail = 详情页自带 iframe；listing = 详情页被门禁/无 iframe，
+        # 只能从列表页的缩略图 iframe 里取（harvest_listing_embeds.py 回填）。
+        src = r.get("video_source") or ("listing" if r.get("video_source") == "listing" else "detail")
+        src_txt = "列表页（详情页受限）" if src == "listing" else ("详情页" if r.get("has_video") else "")
+        ws.cell(row=row, column=16, value=src_txt).alignment = Alignment(horizontal="center")
+        for col in range(1, 17):
             ws.cell(row=row, column=col).border = BOX
             if row % 2 == 0 and ws.cell(row=row, column=col).fill.start_color.rgb in (None, "00000000"):
                 ws.cell(row=row, column=col).fill = PatternFill("solid", fgColor=XL_NOTE)
     LAST = FIRST + len(rows) - 1
-    ws.auto_filter.ref = "A1:O%d" % LAST
+    ws.auto_filter.ref = "A1:P%d" % LAST
     ws.freeze_panes = "C2"
 
     # ------------------------------------------------------------ 汇总
